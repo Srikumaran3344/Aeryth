@@ -23,14 +23,24 @@ const withBackoff = async (fn, maxRetries = 5, delay = 1000) => {
 };
 
 // --- API Calls (Phase 2 Implementation) ---
-const callGeminiAPI = async (chatHistory, systemInstruction) => {
+const callGeminiAPI = async (chatHistory, userSettings, routines) => {
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
     
-    // Prepare contents array for the API, mapping local messages to API format
+    // 1. Prepare contents array for the API, mapping local messages to API format
     const contents = chatHistory.map(msg => ({
         role: msg.sender === 'user' ? 'user' : 'model',
         parts: [{ text: msg.text }]
     }));
+
+    // 2. Prepare System Instruction using personalized settings and current goals
+    const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and mildly manipulative guide. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
+    
+    ---
+    User Profile: ${userSettings?.userInfo || 'No profile information provided.'}
+    Aeryth's Tone: ${userSettings?.aerythTone || 'Friendly Manipulator'}
+    Nagging Criteria: ${userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.'}
+    Current Active Goals/Routines: ${routines.map(r => r.goal).join('; ') || 'No active goals.'}
+    ---`;
     
     const payload = {
         contents: contents,
@@ -47,6 +57,9 @@ const callGeminiAPI = async (chatHistory, systemInstruction) => {
         });
 
         if (!response.ok) {
+            // Log response error for debugging
+            const errorBody = await response.text();
+            console.error("Gemini API error details:", errorBody);
             throw new Error(`API call failed with status: ${response.status}`);
         }
 
@@ -54,7 +67,8 @@ const callGeminiAPI = async (chatHistory, systemInstruction) => {
         const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (!text) {
-            throw new Error("Invalid response structure from API.");
+            // Throw error if model response is empty or invalid
+            throw new Error("Invalid response structure from API or blocked content.");
         }
         return text;
     };
@@ -79,9 +93,10 @@ const App = () => {
     // State for Chat and Data 
     const [routines, setRoutines] = useState([]);
     const [diaryEntries, setDiaryEntries] = useState([]);
+    // userSettings must be initialized to null to differentiate between "not loaded" and "not configured"
     const [userSettings, setUserSettings] = useState(null); 
-    const [messages, setMessages] = useState([]); // NEW: Chat history state
-    const [isAILoading, setIsAILoading] = useState(false); // NEW: Loading state
+    const [messages, setMessages] = useState([]); 
+    const [isAILoading, setIsAILoading] = useState(false); 
     
     // Ref for chat scrolling
     const chatEndRef = useRef(null);
@@ -107,7 +122,8 @@ const App = () => {
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     setUserId(user.uid);
-                    await checkSetupStatus(user.uid);
+                    // Check setup status only once auth is confirmed
+                    await checkSetupStatus(user.uid); 
                 } else {
                     if (initialAuthToken) {
                         await signInWithCustomToken(auth, initialAuthToken);
@@ -131,17 +147,20 @@ const App = () => {
 
         if (docSnap.exists()) {
             setUserSettings(docSnap.data());
-            setAuthStatus('main');
+            // If settings exist, user goes straight to main app
+            setAuthStatus('main'); 
         } else {
-            setAuthStatus('setup');
+            // If settings don't exist, user must complete setup
+            setAuthStatus('setup'); 
         }
     };
     
     // --- 2. FIRESTORE DATA LISTENERS ---
     useEffect(() => {
+        // Only attach listeners once auth is ready and userId is known
         if (!isAuthReady || !userId || !db) return;
 
-        // Listener for User Settings
+        // Listener for User Settings (continues updating even after setup)
         const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
         const unsubscribeSettings = onSnapshot(settingsRef, (docSnap) => {
             if (docSnap.exists()) {
@@ -149,26 +168,20 @@ const App = () => {
             }
         }, (error) => console.error("Error fetching settings:", error));
 
-        // Listener for private Diary Entries (Phase 3)
-        const diaryCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/diaries`);
-        const unsubscribeDiary = onSnapshot(diaryCollectionRef, (snapshot) => {
-            const entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setDiaryEntries(entries.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
-        }, (error) => console.error("Error fetching diary entries:", error));
-
-        // Listener for Routines/Goals (Phase 3)
+        // Listener for Routines/Goals (Phase 3 data structure, but needed for chat context)
         const routineCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/routines`);
         const unsubscribeRoutines = onSnapshot(routineCollectionRef, (snapshot) => {
             const activeRoutines = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             setRoutines(activeRoutines.sort((a, b) => (a.dailyTime > b.dailyTime) ? 1 : -1));
         }, (error) => console.error("Error fetching routines:", error));
         
-        // Listener for Chat Messages (Phase 2)
+        // Listener for Chat Messages (Phase 2 core feature)
         const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/chats`);
         const unsubscribeChat = onSnapshot(chatCollectionRef, (snapshot) => {
             const chatMessages = snapshot.docs.map(doc => ({ 
                 id: doc.id, 
                 ...doc.data(),
+                // Convert Firestore Timestamp object to JS Date object
                 timestamp: doc.data().timestamp?.toDate() || new Date() 
             }));
             setMessages(chatMessages.sort((a, b) => a.timestamp - b.timestamp));
@@ -177,9 +190,10 @@ const App = () => {
 
 
         return () => {
+            // Clean up all listeners on unmount or dependency change
             unsubscribeSettings();
-            unsubscribeDiary();
-            unsubscribeRoutines();
+            // unsubscribeDiary(); // Phase 3
+            unsubscribeRoutines(); 
             unsubscribeChat();
         };
     }, [isAuthReady, userId]);
@@ -193,20 +207,21 @@ const App = () => {
         setCurrentView('explore');
     };
     
+    // Handler for sending a message and getting an AI response (Core Phase 2)
     const handleSendMessage = async (input) => {
         if (!input.trim() || !userId || isAILoading) return;
 
-        // 1. Prepare new user message object and optimistically update local state
+        // 1. Prepare new user message object
         const userMessage = { 
             sender: 'user', 
             text: input, 
             timestamp: new Date() 
         };
         
-        // Update local state temporarily (Firestore listener will correct this when data syncs)
+        // Optimistically add user message to the list (Firestore listener will later update it correctly)
         setMessages(prev => [...prev, userMessage]); 
         
-        // 2. Save user message to Firestore
+        // 2. Save user message to Firestore (Persists data)
         try {
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
                 ...userMessage,
@@ -219,21 +234,12 @@ const App = () => {
         setIsAILoading(true);
         scrollToBottom();
 
-        // 3. Prepare AI Prompt & System Instruction
-        const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and mildly manipulative guide. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
-        
-        ---
-        User Profile: ${userSettings?.userInfo || 'No profile information provided.'}
-        Aeryth's Tone: ${userSettings?.aerythTone || 'Friendly Manipulator'}
-        Nagging Criteria: ${userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.'}
-        Current Goals: ${routines.map(r => r.goal).join('; ') || 'No active goals.'}
-        ---`;
-        
         // Use the current messages state (synced by listener) as chat history for the API call
+        // Note: The listener updates 'messages' to include the message we just saved.
         const apiHistory = [...messages, userMessage]; 
 
         try {
-            const aiResponseText = await callGeminiAPI(apiHistory, systemInstruction);
+            const aiResponseText = await callGeminiAPI(apiHistory, userSettings, routines);
             
             const aiMessage = { 
                 sender: 'aeryth', 
@@ -241,7 +247,7 @@ const App = () => {
                 timestamp: new Date() 
             };
             
-            // 4. Save AI response to Firestore
+            // 4. Save AI response to Firestore (Persists data)
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
                 ...aiMessage,
                 timestamp: serverTimestamp()
@@ -249,10 +255,10 @@ const App = () => {
 
         } catch (error) {
             console.error("Gemini API call failed:", error);
-            // Add system error message to chat
+            // Add a system error message to the chat
             const errorMessage = { 
                 sender: 'system', 
-                text: "Aeryth encountered an error. Please check your network connection or the console for details.", 
+                text: "Aeryth encountered a network or API error. Check the console for details.", 
                 timestamp: new Date() 
             };
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
@@ -264,11 +270,6 @@ const App = () => {
         }
     };
     
-    // Placeholder for Phase 3 Diary
-    const handleSaveDiaryEntry = async (entryText) => {
-        // Implementation for Phase 3
-    };
-
     // --- UI COMPONENTS: SCREENS (Login, Setup, Loading) ---
 
     const LoadingScreen = () => (
@@ -290,7 +291,6 @@ const App = () => {
              if (auth) {
                  await signInAnonymously(auth);
              } else {
-                 // Fallback if auth didn't initialize
                  setAuthStatus('setup'); 
              }
         }
@@ -323,7 +323,7 @@ const App = () => {
     const SetupScreen = ({ authStatus, setCurrentView }) => {
         const isFirstTimeSetup = authStatus === 'setup';
         const [setupData, setSetupData] = useState({
-            // Initialize with current userSettings for 'main' status, or defaults for 'setup' status
+            // Initialize with current userSettings if available
             aerythTone: userSettings?.aerythTone || 'Friendly Manipulator',
             userInfo: userSettings?.userInfo || '',
             naggingCriteria: userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.',
@@ -350,7 +350,8 @@ const App = () => {
 
             try {
                 const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
-                await setDoc(settingsRef, settingsToSave, { merge: true }); // Use merge to avoid overwriting future fields
+                // Use merge:true to avoid overwriting future fields
+                await setDoc(settingsRef, settingsToSave, { merge: true }); 
                 
                 if (isFirstTimeSetup) {
                     alertUser("Aeryth is configured! Starting the rhythm...");
@@ -489,6 +490,7 @@ const App = () => {
         const now = new Date();
         const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         
+        // Simple logic to find the next routine by time
         const nextRoutine = routines.find(r => r.dailyTime > currentTime) || routines[0];
         
         const SidebarButton = ({ view, icon, label }) => (
@@ -508,10 +510,9 @@ const App = () => {
         return (
             <div className="w-80 flex-shrink-0 h-full p-4 space-y-4 bg-white overflow-y-auto relative">
                 
-                {/* Close Button (Now a universal toggle icon) */}
+                {/* Close Button (Universal toggle icon) */}
                 <button
                     onClick={toggleSidebar}
-                    // Changed styling from red to indigo and title to reflect universal toggle
                     className="absolute right-4 top-4 z-50 p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg transition"
                     title="Toggle Sidebar"
                 >
@@ -521,7 +522,7 @@ const App = () => {
                     </svg>
                 </button>
                 
-                <div className="text-center pb-2 border-b pt-10"> {/* Added pt-10 to account for button */}
+                <div className="text-center pb-2 border-b pt-10">
                     <h3 className="text-2xl font-extrabold text-indigo-700">Aeryth</h3>
                     <p className="text-sm text-gray-500">Rhythm Partner</p>
                     <p className="text-xs text-gray-400 truncate" title={userId}>ID: {userId ? userId.slice(0, 8) + '...' : '...'}</p>
@@ -549,7 +550,7 @@ const App = () => {
                         <p className="text-sm text-gray-500 italic p-3">No active goals. Set one!</p>
                     )}
                     
-                    <h4 className="text-sm font-semibold text-gray-800 pt-3 border-t mt-3">All Routines:</h4>
+                    <h4 className="text-sm font-semibold text-gray-800 pt-3 border-t mt-3">All Routines (Phase 3):</h4>
                     <div className="max-h-40 overflow-y-auto space-y-2">
                         {routines.map(r => (
                             <div key={r.id} className="p-2 bg-gray-50 rounded-lg text-xs text-gray-700 border border-gray-200">
@@ -562,10 +563,10 @@ const App = () => {
                 {/* Navigation Buttons (Lower Quarter) */}
                 <div className="pt-4 border-t border-gray-200 space-y-2">
                     <h4 className="text-sm font-semibold text-gray-800">Navigation:</h4>
-                    <SidebarButton view="calendar" icon="🗓️" label="Calendar (Phase 4)" />
-                    <SidebarButton view="diary" icon="✍️" label="Diary" />
-                    <SidebarButton view="report" icon="📈" label="Progress Report (Phase 4)" />
                     <SidebarButton view="explore" icon="💬" label="Chat with Aeryth" />
+                    <SidebarButton view="calendar" icon="🗓️" label="Calendar (Phase 4)" />
+                    <SidebarButton view="diary" icon="✍️" label="Diary (Phase 3)" />
+                    <SidebarButton view="report" icon="📈" label="Progress Report (Phase 4)" />
                 </div>
                 
                 {/* Settings Button */}
@@ -624,7 +625,6 @@ const App = () => {
         return (
             <div className="flex-1 flex flex-col h-full bg-gray-100 relative">
                 {/* Sidebar Toggle Button (Open) - Only visible when sidebar is CLOSED */}
-                {/* Now placed outside the sidebar to initiate the toggle */}
                 {!isSidebarOpen && (
                     <button
                         onClick={toggleSidebar}
@@ -640,7 +640,7 @@ const App = () => {
                 {/* Chat Messages Area - Scrollable area with padding for the fixed footer/input */}
                 <div className="flex-1 p-6 space-y-4 overflow-y-auto" style={{ paddingBottom: '120px' }}> 
                     <div className="text-center text-gray-500 italic mb-6">
-                        Aeryth's Tone: <span className="font-semibold text-indigo-600">{userSettings?.aerythTone}</span> | Current Mode: Chat
+                        Aeryth's Tone: <span className="font-semibold text-indigo-600">{userSettings?.aerythTone || 'Default'}</span> | Current Mode: Chat
                     </div>
                     
                     {messages.map((msg, index) => (
@@ -718,7 +718,7 @@ const App = () => {
     };
     
     // Placeholder Views for other main screens
-    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen }) => (
+    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => (
         <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">
             {/* Sidebar Toggle Button (Open) - Only visible when sidebar is CLOSED */}
             {!isSidebarOpen && (
@@ -767,15 +767,15 @@ const App = () => {
                     setCurrentView={setCurrentView}
                 />;
             case 'setGoal':
-                return <PlaceholderView title="Set Goal (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+                return <PlaceholderView title="Set Goal (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
             case 'diary':
-                return <PlaceholderView title="Diary Entry (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+                return <PlaceholderView title="Diary Entry (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
             case 'calendar':
-                return <PlaceholderView title="Calendar View (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+                return <PlaceholderView title="Calendar View (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
             case 'report':
-                return <PlaceholderView title="Progress Report (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+                return <PlaceholderView title="Progress Report (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
             default:
-                return <PlaceholderView title="Unknown View" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+                return <PlaceholderView title="Unknown View" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
         }
     }
 
