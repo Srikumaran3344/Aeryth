@@ -320,8 +320,10 @@ const App = () => {
         );
     };
 
-    const SetupScreen = () => {
+    const SetupScreen = ({ authStatus, setCurrentView }) => {
+        const isFirstTimeSetup = authStatus === 'setup';
         const [setupData, setSetupData] = useState({
+            // Initialize with current userSettings for 'main' status, or defaults for 'setup' status
             aerythTone: userSettings?.aerythTone || 'Friendly Manipulator',
             userInfo: userSettings?.userInfo || '',
             naggingCriteria: userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.',
@@ -348,9 +350,16 @@ const App = () => {
 
             try {
                 const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
-                await setDoc(settingsRef, settingsToSave);
-                alertUser("Aeryth is configured! Starting the rhythm...");
-                handleSetupComplete(settingsToSave);
+                await setDoc(settingsRef, settingsToSave, { merge: true }); // Use merge to avoid overwriting future fields
+                
+                if (isFirstTimeSetup) {
+                    alertUser("Aeryth is configured! Starting the rhythm...");
+                    handleSetupComplete(settingsToSave);
+                } else {
+                    alertUser("Settings saved!");
+                    // Go back to the chat view after saving edits
+                    setCurrentView('explore');
+                }
             } catch (error) {
                 console.error("Error saving setup:", error);
                 alertUser("Failed to save settings. Check console.");
@@ -359,16 +368,38 @@ const App = () => {
             }
         };
         
-        const skipSetup = () => {
-            // Save defaults and skip
+        const handleSkip = () => {
+            // Save defaults and skip only on first time setup
             handleSaveSetup(); 
+        }
+        
+        const handleBack = () => {
+            setCurrentView('explore');
         }
 
         return (
             <div className="flex justify-center items-center h-screen bg-gray-100 p-4 overflow-y-auto">
                 <div className="w-full max-w-2xl p-8 bg-white rounded-xl shadow-2xl border-t-4 border-indigo-600 my-8">
-                    <h2 className="text-3xl font-extrabold text-indigo-700 mb-2">Aeryth Initial Setup</h2>
-                    <p className="text-gray-600 mb-8">Personalize your protective companion for maximum effect.</p>
+                    
+                    {/* Back Button (Only visible after first login) */}
+                    {!isFirstTimeSetup && (
+                        <button 
+                            onClick={handleBack}
+                            className="text-indigo-600 hover:text-indigo-800 font-semibold mb-4 flex items-center"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+                            </svg>
+                            Back to Chat
+                        </button>
+                    )}
+
+                    <h2 className="text-3xl font-extrabold text-indigo-700 mb-2">
+                        {isFirstTimeSetup ? "Aeryth Initial Setup" : "Edit Aeryth Settings"}
+                    </h2>
+                    <p className="text-gray-600 mb-8">
+                        {isFirstTimeSetup ? "Personalize your protective companion for maximum effect." : "Adjust Aeryth's personality and boundaries."}
+                    </p>
 
                     <div className="space-y-6">
                         {/* 1. Tone */}
@@ -426,19 +457,25 @@ const App = () => {
                                     : 'bg-indigo-600 hover:bg-indigo-700'
                             }`}
                         >
-                            {setupData.isSaving ? 'Saving...' : 'Complete Setup'}
+                            {setupData.isSaving 
+                                ? 'Saving...' 
+                                : (isFirstTimeSetup ? 'Complete Setup' : 'Save Changes')}
                         </button>
-                        <button 
-                            onClick={skipSetup}
-                            disabled={setupData.isSaving}
-                            className={`py-3 px-6 rounded-lg font-bold transition duration-300 ${
-                                setupData.isSaving
-                                    ? 'text-gray-400 cursor-not-allowed'
-                                    : 'text-indigo-600 hover:text-indigo-800'
-                            }`}
-                        >
-                            Skip for Now
-                        </button>
+                        
+                        {/* Skip for Now (Only visible on first time setup) */}
+                        {isFirstTimeSetup && (
+                            <button 
+                                onClick={handleSkip}
+                                disabled={setupData.isSaving}
+                                className={`py-3 px-6 rounded-lg font-bold transition duration-300 ${
+                                    setupData.isSaving
+                                        ? 'text-gray-400 cursor-not-allowed'
+                                        : 'text-indigo-600 hover:text-indigo-800'
+                                }`}
+                            >
+                                Skip for Now
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -712,8 +749,8 @@ const App = () => {
 
         // Map 'settings' view back to the SetupScreen component
         if (currentView === 'settings') {
-            // Setup screen is static and doesn't need the toggle button
-            return <SetupScreen />;
+            // Pass authStatus and setCurrentView so SetupScreen knows it's being used as an editor
+            return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
         }
         
         // Map other views to components, passing props
@@ -754,7 +791,8 @@ const App = () => {
     }
 
     if (authStatus === 'setup') {
-        return <SetupScreen />;
+        // Force full screen setup on first login
+        return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
     }
     
     // Main App Layout using Flexbox for dynamic resizing
