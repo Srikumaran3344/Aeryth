@@ -1,16 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, addDoc, setDoc, doc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, addDoc, setDoc, doc, getDoc, serverTimestamp, query, where, deleteDoc, getDocs, orderBy } from 'firebase/firestore';
 
 // --- CONFIGURATION ---
-// These global variables are provided by the Canvas environment.
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 const API_KEY = ""; // Placeholder for Gemini API Key
 
-// Utility function for exponential backoff during API calls
+// --- UTILITIES ---
 const withBackoff = async (fn, maxRetries = 5, delay = 1000) => {
     for (let i = 0; i < maxRetries; i++) {
         try {
@@ -22,31 +21,38 @@ const withBackoff = async (fn, maxRetries = 5, delay = 1000) => {
     }
 };
 
-// --- API Calls (Phase 2 Implementation) ---
+// --- API Calls ---
 const callGeminiAPI = async (chatHistory, userSettings, routines) => {
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
     
-    // 1. Prepare contents array for the API, mapping local messages to API format
     const contents = chatHistory.map(msg => ({
         role: msg.sender === 'user' ? 'user' : 'model',
         parts: [{ text: msg.text }]
     }));
 
-    // 2. Prepare System Instruction using personalized settings and current goals
-    const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and mildly manipulative guide. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
+    const currentChatId = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].chatId : null;
+    // MODIFIED AI INSTRUCTION
+    const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and subtly guiding companion. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
     
-    ---
-    User Profile: ${userSettings?.userInfo || 'No profile information provided.'}
-    Aeryth's Tone: ${userSettings?.aerythTone || 'Friendly Manipulator'}
-    Nagging Criteria: ${userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.'}
-    Current Active Goals/Routines: ${routines.map(r => r.goal).join('; ') || 'No active goals.'}
-    ---`;
+Use the user profile information to deeply understand their personality, but NEVER explicitly mention it. Your understanding should be implicit and reflected in your tone.
+
+---
+[User Profile Context]
+About User: ${userSettings?.userInfo || 'No profile information provided.'}
+Aeryth's Tone Setting: ${userSettings?.aerythTone || 'Friendly'}
+User's Routine Criteria: ${userSettings?.routineCriteria || 'No specific criteria provided.'}
+
+[Task Context]
+Current Active Goals/Routines for this chat: ${currentChatId ? routines.filter(r => r.chatId === currentChatId).map(r => r.goal).join('; ') : 'None yet.'}
+
+**CRITICAL INSTRUCTION:** If no goals are listed for the current chat, this is an 'explore' session. Your primary objective is to help the user clarify their thoughts and guide them toward setting a concrete, actionable goal using the 'Set Goal' feature. Persuade them that defining a goal is the crucial first step before any work can begin. Frame goal-setting as the main task. For example: "That's a great starting point. To make sure we tackle this effectively, let's set a formal goal. What would be a good name for this routine?" or "Before we dive in, let's get this scheduled. When is the best time to work on this?"
+---
+
+Begin conversation.`;
     
     const payload = {
         contents: contents,
-        systemInstruction: {
-            parts: [{ text: systemInstruction }]
-        },
+        systemInstruction: { parts: [{ text: systemInstruction }] },
     };
 
     const fetcher = async () => {
@@ -55,173 +61,196 @@ const callGeminiAPI = async (chatHistory, userSettings, routines) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-
         if (!response.ok) {
-            // Log response error for debugging
             const errorBody = await response.text();
-            console.error("Gemini API error details:", errorBody);
-            throw new Error(`API call failed with status: ${response.status}`);
+            console.error("Gemini API error:", errorBody);
+            throw new Error(`API call failed: ${response.status}`);
         }
-
         const result = await response.json();
         const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!text) {
-            // Throw error if model response is empty or invalid
-            throw new Error("Invalid response structure from API or blocked content.");
-        }
+        if (!text) throw new Error("Invalid API response.");
         return text;
     };
 
     return withBackoff(fetcher);
 };
 
+
 // --- FIREBASE AND AUTH SETUP ---
 let db = null;
 let auth = null;
 
 const App = () => {
-    // State for Firebase and Auth
-    const [authStatus, setAuthStatus] = useState('loading'); // 'loading', 'login', 'setup', 'main'
+    // --- STATE MANAGEMENT ---
+    const [authStatus, setAuthStatus] = useState('loading');
     const [userId, setUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
     
-    // State for UI and Navigation
-    const [currentView, setCurrentView] = useState('explore'); // 'explore', 'setGoal', 'diary', 'calendar', 'report', 'settings'
+    const [currentView, setCurrentView] = useState('explore');
     const [isSidebarOpen, setIsSidebarOpen] = useState(true); 
 
-    // State for Chat and Data 
     const [routines, setRoutines] = useState([]);
-    const [diaryEntries, setDiaryEntries] = useState([]);
-    // userSettings must be initialized to null to differentiate between "not loaded" and "not configured"
     const [userSettings, setUserSettings] = useState(null); 
-    const [messages, setMessages] = useState([]); 
     const [isAILoading, setIsAILoading] = useState(false); 
     
-    // Ref for chat scrolling
+    // -- NEW: Multi-Chat State --
+    const [chats, setChats] = useState([]);
+    const [currentChatId, setCurrentChatId] = useState(null);
+    const [messages, setMessages] = useState([]); 
+    
     const chatEndRef = useRef(null);
     const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
 
-    // --- UTILITIES ---
-    const alertUser = (message) => console.log(`[Aeryth Alert]: ${message}`);
+    // FIX: Dedicated useEffect for scrolling to the bottom whenever messages change.
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages]);
+
+    const alertUser = (message) => console.log(`[Aeryth Alert]: ${message}`); // Placeholder for a proper modal
     
     // --- 1. FIREBASE INITIALIZATION AND AUTH ---
     useEffect(() => {
-        if (Object.keys(firebaseConfig).length === 0) {
-            console.error("Firebase config is missing.");
+        if (!Object.keys(firebaseConfig).length) return;
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                setUserId(user.uid);
+                await checkSetupStatus(user.uid);
+            } else if (initialAuthToken) {
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+                await signInAnonymously(auth);
+            }
             setIsAuthReady(true);
-            setAuthStatus('login');
-            return;
-        }
-
-        try {
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-            
-            onAuthStateChanged(auth, async (user) => {
-                if (user) {
-                    setUserId(user.uid);
-                    // Check setup status only once auth is confirmed
-                    await checkSetupStatus(user.uid); 
-                } else {
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                }
-                setIsAuthReady(true);
-            });
-        } catch (error) {
-            console.error("Firebase initialization failed:", error);
-            setIsAuthReady(true);
-            setAuthStatus('login');
-        }
+        });
     }, []);
 
     const checkSetupStatus = async (uid) => {
         if (!db) return;
         const settingsRef = doc(db, `artifacts/${appId}/users/${uid}/settings/aeryth`);
         const docSnap = await getDoc(settingsRef);
-
         if (docSnap.exists()) {
             setUserSettings(docSnap.data());
-            // If settings exist, user goes straight to main app
             setAuthStatus('main'); 
         } else {
-            // If settings don't exist, user must complete setup
             setAuthStatus('setup'); 
         }
     };
     
     // --- 2. FIRESTORE DATA LISTENERS ---
     useEffect(() => {
-        // Only attach listeners once auth is ready and userId is known
         if (!isAuthReady || !userId || !db) return;
 
-        // Listener for User Settings (continues updating even after setup)
         const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
-        const unsubscribeSettings = onSnapshot(settingsRef, (docSnap) => {
-            if (docSnap.exists()) {
-                setUserSettings(docSnap.data());
+        const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
+            if (docSnap.exists()) setUserSettings(docSnap.data());
+        });
+
+        const routinesRef = collection(db, `artifacts/${appId}/users/${userId}/routines`);
+        const unsubRoutines = onSnapshot(routinesRef, (snap) => {
+            const allRoutines = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setRoutines(allRoutines);
+        });
+
+        const chatSessionsRef = query(collection(db, `artifacts/${appId}/users/${userId}/chat_sessions`), orderBy('createdAt', 'desc'));
+        const unsubChatSessions = onSnapshot(chatSessionsRef, (snapshot) => {
+            const chatList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setChats(chatList);
+            if (!currentChatId && chatList.length > 0) {
+                setCurrentChatId(chatList[0].id);
+            } else if (chatList.length === 0) {
+                handleNewChat(false);
             }
-        }, (error) => console.error("Error fetching settings:", error));
-
-        // Listener for Routines/Goals (Phase 3 data structure, but needed for chat context)
-        const routineCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/routines`);
-        const unsubscribeRoutines = onSnapshot(routineCollectionRef, (snapshot) => {
-            const activeRoutines = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setRoutines(activeRoutines.sort((a, b) => (a.dailyTime > b.dailyTime) ? 1 : -1));
-        }, (error) => console.error("Error fetching routines:", error));
-        
-        // Listener for Chat Messages (Phase 2 core feature)
-        const chatCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/chats`);
-        const unsubscribeChat = onSnapshot(chatCollectionRef, (snapshot) => {
-            const chatMessages = snapshot.docs.map(doc => ({ 
-                id: doc.id, 
-                ...doc.data(),
-                // Convert Firestore Timestamp object to JS Date object
-                timestamp: doc.data().timestamp?.toDate() || new Date() 
-            }));
-            setMessages(chatMessages.sort((a, b) => a.timestamp - b.timestamp));
-            scrollToBottom();
-        }, (error) => console.error("Error fetching chat messages:", error));
-
+        });
 
         return () => {
-            // Clean up all listeners on unmount or dependency change
-            unsubscribeSettings();
-            // unsubscribeDiary(); // Phase 3
-            unsubscribeRoutines(); 
-            unsubscribeChat();
+            unsubSettings();
+            unsubRoutines();
+            unsubChatSessions();
         };
     }, [isAuthReady, userId]);
 
-    // --- 3. COMPONENT HANDLERS ---
+    useEffect(() => {
+        if (!currentChatId || !userId || !db) {
+            setMessages([]);
+            return;
+        };
 
-    // Handler to transition from Setup to Main App
+        const messagesQuery = query(collection(db, `artifacts/${appId}/users/${userId}/chats`), where("chatId", "==", currentChatId));
+        const unsubMessages = onSnapshot(messagesQuery, (snapshot) => {
+            const chatMessages = snapshot.docs.map(doc => ({ 
+                id: doc.id, 
+                ...doc.data(),
+                timestamp: doc.data().timestamp?.toDate() || new Date() 
+            }));
+            chatMessages.sort((a, b) => a.timestamp - b.timestamp);
+            setMessages(chatMessages);
+        });
+
+        return () => unsubMessages();
+    }, [currentChatId, userId]);
+
+
+    // --- 3. COMPONENT HANDLERS ---
     const handleSetupComplete = (settings) => {
         setUserSettings(settings);
         setAuthStatus('main');
         setCurrentView('explore');
     };
     
-    // Handler for sending a message and getting an AI response (Core Phase 2)
-    const handleSendMessage = async (input) => {
-        if (!input.trim() || !userId || isAILoading) return;
+    const handleNewChat = async (setActive = true) => {
+        if (!userId) return;
+        try {
+            const newChat = {
+                name: `New Chat on ${new Date().toLocaleDateString()}`,
+                createdAt: serverTimestamp(),
+            };
+            const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chat_sessions`), newChat);
+            if (setActive) {
+                setCurrentChatId(docRef.id);
+                setCurrentView('explore');
+            }
+        } catch (error) {
+            console.error("Failed to create new chat:", error)
+        }
+    };
+    
+    const handleDeleteChat = async (chatId, chatName) => {
+        alertUser(`Warning: This will permanently delete the chat "${chatName}" and its linked routine.`);
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/chat_sessions`, chatId));
+            const q = query(collection(db, `artifacts/${appId}/users/${userId}/routines`), where("chatId", "==", chatId));
+            const querySnapshot = await getDocs(q);
+            const deletePromises = [];
+            querySnapshot.forEach((doc) => deletePromises.push(deleteDoc(doc.ref)));
+            await Promise.all(deletePromises);
+            
+            if (currentChatId === chatId) {
+                const remainingChats = chats.filter(c => c.id !== chatId);
+                setCurrentChatId(remainingChats.length > 0 ? remainingChats[0].id : null);
+            }
+             alertUser(`Successfully deleted "${chatName}".`);
+        } catch (error) {
+            console.error("Error deleting chat:", error);
+            alertUser("Failed to delete chat.");
+        }
+    };
 
-        // 1. Prepare new user message object
+    const handleSendMessage = async (input) => {
+        if (!input.trim() || !userId || isAILoading || !currentChatId) return;
+
         const userMessage = { 
             sender: 'user', 
             text: input, 
-            timestamp: new Date() 
+            timestamp: new Date(),
+            chatId: currentChatId
         };
         
-        // Optimistically add user message to the list (Firestore listener will later update it correctly)
-        setMessages(prev => [...prev, userMessage]); 
+        // No optimistic update needed since Firestore listener handles it
         
-        // 2. Save user message to Firestore (Persists data)
         try {
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
                 ...userMessage,
@@ -232,589 +261,261 @@ const App = () => {
         }
         
         setIsAILoading(true);
-        scrollToBottom();
 
-        // Use the current messages state (synced by listener) as chat history for the API call
-        // Note: The listener updates 'messages' to include the message we just saved.
         const apiHistory = [...messages, userMessage]; 
 
         try {
             const aiResponseText = await callGeminiAPI(apiHistory, userSettings, routines);
-            
             const aiMessage = { 
                 sender: 'aeryth', 
                 text: aiResponseText, 
-                timestamp: new Date() 
+                timestamp: new Date(),
+                chatId: currentChatId
             };
-            
-            // 4. Save AI response to Firestore (Persists data)
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
                 ...aiMessage,
                 timestamp: serverTimestamp()
             });
-
         } catch (error) {
             console.error("Gemini API call failed:", error);
-            // Add a system error message to the chat
             const errorMessage = { 
                 sender: 'system', 
-                text: "Aeryth encountered a network or API error. Check the console for details.", 
-                timestamp: new Date() 
+                text: "Aeryth encountered a network or API error.", 
+                timestamp: new Date(),
+                chatId: currentChatId
             };
-            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-                ...errorMessage,
-                timestamp: serverTimestamp()
-            });
+            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), { ...errorMessage, timestamp: serverTimestamp()});
         } finally {
             setIsAILoading(false);
         }
     };
     
-    // --- UI COMPONENTS: SCREENS (Login, Setup, Loading) ---
+    // --- 4. UI COMPONENTS ---
 
-    const LoadingScreen = () => (
-        <div className="flex justify-center items-center h-screen bg-gray-900">
-            <div className="text-center p-8 bg-white rounded-xl shadow-2xl border-t-4 border-indigo-600">
-                <svg className="animate-spin h-8 w-8 text-indigo-600 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <p className="text-lg text-gray-700 font-semibold">Connecting to Aeryth's Core...</p>
-                <p className="text-sm text-gray-500 mt-1">Establishing identity and rhythm.</p>
-            </div>
-        </div>
-    );
-
-    const LoginScreen = () => {
-        const handleGuestLogin = async () => {
-             setAuthStatus('loading');
-             if (auth) {
-                 await signInAnonymously(auth);
-             } else {
-                 setAuthStatus('setup'); 
-             }
-        }
-
-        return (
-            <div className="flex justify-center items-center h-screen bg-gray-900">
-                <div className="text-center p-8 bg-white rounded-xl shadow-2xl w-96">
-                    <h1 className="text-4xl font-extrabold text-indigo-700 mb-2">Welcome to Aeryth</h1>
-                    <p className="text-gray-500 mb-6">Your shield of rhythm against procrastination.</p>
-                    
-                    <button
-                        onClick={handleGuestLogin}
-                        className="w-full py-3 mb-3 rounded-lg font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-md"
-                    >
-                        Sign In as Guest (Recommended)
-                    </button>
-                    
-                    <button
-                        className="w-full py-3 rounded-lg font-bold text-gray-700 bg-gray-200 hover:bg-gray-300 transition shadow-md"
-                        disabled
-                    >
-                        Sign In with Google (Future Feature)
-                    </button>
-                    <p className="text-xs text-gray-400 mt-4">We use anonymous login to secure your data in Firestore.</p>
-                </div>
-            </div>
-        );
-    };
-
+    const LoadingScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500"><svg className="animate-spin h-8 w-8 text-violet-500 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p className="text-lg text-gray-700 font-semibold">Connecting to Aeryth's Core...</p></div></div>);
+    const LoginScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl w-96"><h1 className="text-4xl font-extrabold text-violet-600 mb-2">Welcome to Aeryth</h1><p className="text-gray-500 mb-6">Your shield of rhythm against procrastination.</p><button onClick={async () => { setAuthStatus('loading'); if (auth) await signInAnonymously(auth); }} className="w-full py-3 mb-3 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">Sign In as Guest</button><button className="w-full py-3 rounded-lg font-bold text-gray-700 bg-gray-200 transition shadow-md" disabled>Sign In with Google</button></div></div>);
+    const ChatMessage = ({ sender, text, timestamp }) => { const isUser = sender === 'user', isSystem = sender === 'system'; if (isSystem) return <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM ERROR]: {text}</div></div>; return <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}><div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? 'bg-violet-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-tl-none border'}`}><p className="whitespace-pre-wrap">{text}</p><span className={`block text-xs mt-1 ${isUser ? 'text-violet-200' : 'text-gray-400'}`}>{timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}</span></div></div>;};
+    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => ( <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">{!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}<div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500"><h2 className="text-3xl font-extrabold text-violet-600 mb-4">{title}</h2><p className="text-xl text-gray-600">This view is coming in a later phase!</p><button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-violet-500 hover:text-violet-700 font-medium">Go Back to Chat</button></div></div>);
+    
     const SetupScreen = ({ authStatus, setCurrentView }) => {
         const isFirstTimeSetup = authStatus === 'setup';
         const [setupData, setSetupData] = useState({
-            // Initialize with current userSettings if available
-            aerythTone: userSettings?.aerythTone || 'Friendly Manipulator',
+            aerythTone: userSettings?.aerythTone || 'Friendly',
             userInfo: userSettings?.userInfo || '',
-            naggingCriteria: userSettings?.naggingCriteria || 'No harsh words until 3 snoozes.',
+            routineCriteria: userSettings?.routineCriteria || 'No harsh words until 3 snoozes.',
             isSaving: false,
         });
 
-        const handleChange = (e) => {
-            const { name, value } = e.target;
-            setSetupData(prev => ({ ...prev, [name]: value }));
-        };
+        const handleChange = (e) => setSetupData(p => ({ ...p, [e.target.name]: e.target.value }));
 
         const handleSaveSetup = async () => {
-            if (!userId) {
-                alertUser("Authentication not ready. Please try again.");
-                return;
-            }
-
-            setSetupData(prev => ({ ...prev, isSaving: true }));
-            const settingsToSave = {
-                aerythTone: setupData.aerythTone,
-                userInfo: setupData.userInfo,
-                naggingCriteria: setupData.naggingCriteria,
-            };
-
+            if (!userId) { alertUser("Auth not ready."); return; }
+            setSetupData(p => ({ ...p, isSaving: true }));
+            const { isSaving, ...settingsToSave } = setupData;
             try {
-                const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
-                // Use merge:true to avoid overwriting future fields
-                await setDoc(settingsRef, settingsToSave, { merge: true }); 
-                
-                if (isFirstTimeSetup) {
-                    alertUser("Aeryth is configured! Starting the rhythm...");
-                    handleSetupComplete(settingsToSave);
-                } else {
-                    alertUser("Settings saved!");
-                    // Go back to the chat view after saving edits
-                    setCurrentView('explore');
-                }
-            } catch (error) {
-                console.error("Error saving setup:", error);
-                alertUser("Failed to save settings. Check console.");
-            } finally {
-                setSetupData(prev => ({ ...prev, isSaving: false }));
-            }
+                await setDoc(doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`), settingsToSave, { merge: true }); 
+                if (isFirstTimeSetup) handleSetupComplete(settingsToSave);
+                else { alertUser("Settings saved!"); setCurrentView('explore'); }
+            } catch (error) { console.error("Error saving setup:", error); } 
+            finally { setSetupData(p => ({ ...p, isSaving: false })); }
         };
         
-        const handleSkip = () => {
-            // Save defaults and skip only on first time setup
-            handleSaveSetup(); 
-        }
-        
-        const handleBack = () => {
-            setCurrentView('explore');
-        }
-
         return (
             <div className="flex justify-center items-center h-screen bg-gray-100 p-4 overflow-y-auto">
-                <div className="w-full max-w-2xl p-8 bg-white rounded-xl shadow-2xl border-t-4 border-indigo-600 my-8">
-                    
-                    {/* Back Button (Only visible after first login) */}
-                    {!isFirstTimeSetup && (
-                        <button 
-                            onClick={handleBack}
-                            className="text-indigo-600 hover:text-indigo-800 font-semibold mb-4 flex items-center"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-                            </svg>
-                            Back to Chat
-                        </button>
-                    )}
-
-                    <h2 className="text-3xl font-extrabold text-indigo-700 mb-2">
-                        {isFirstTimeSetup ? "Aeryth Initial Setup" : "Edit Aeryth Settings"}
-                    </h2>
-                    <p className="text-gray-600 mb-8">
-                        {isFirstTimeSetup ? "Personalize your protective companion for maximum effect." : "Adjust Aeryth's personality and boundaries."}
-                    </p>
-
+                <div className="w-full max-w-2xl p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500 my-8">
+                    {!isFirstTimeSetup && <button onClick={() => setCurrentView('explore')} className="text-violet-500 hover:text-violet-700 font-semibold mb-4 flex items-center"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>Back</button>}
+                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">{isFirstTimeSetup ? "Aeryth Initial Setup" : "Edit Aeryth Settings"}</h2>
+                    <p className="text-gray-600 mb-8">Personalize your companion for maximum effect.</p>
                     <div className="space-y-6">
-                        {/* 1. Tone */}
                         <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">1. Aeryth's Tone</label>
-                            <select
-                                name="aerythTone"
-                                value={setupData.aerythTone}
-                                onChange={handleChange}
-                                className="mt-1 p-3 block w-full border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                            >
-                                <option value="Friendly Manipulator">Friendly Manipulator (Default)</option>
+                            <label className="block text-lg font-bold text-gray-700 mb-2">Aeryth's Tone</label>
+                            <select name="aerythTone" value={setupData.aerythTone} onChange={handleChange} className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500 focus:border-violet-500">
+                                <option value="Friendly">Friendly (Default)</option>
                                 <option value="Tough Love Coach">Tough Love Coach</option>
                                 <option value="Gentle Assistant">Gentle Assistant</option>
                                 <option value="Hyper-Logical Analyst">Hyper-Logical Analyst</option>
                             </select>
                         </div>
-                        
-                        {/* 2. User Info */}
                         <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">2. About You</label>
-                            <textarea
-                                name="userInfo"
-                                value={setupData.userInfo}
-                                onChange={handleChange}
-                                rows="3"
-                                className="mt-1 p-3 block w-full border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                                placeholder="I work best when I have a tight deadline. I am interested in history."
-                            />
-                            <p className="text-sm text-gray-500 mt-1">This helps Aeryth personalize its conversation.</p>
+                            <label className="block text-lg font-bold text-gray-700 mb-2">About You</label>
+                            <textarea name="userInfo" value={setupData.userInfo} onChange={handleChange} rows="3" className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500" placeholder="I work best under pressure..." />
                         </div>
-
-                        {/* 3. Nagging Criteria */}
                         <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">3. Nagging Criteria (The 'Stop' Switch)</label>
-                            <input
-                                type="text"
-                                name="naggingCriteria"
-                                value={setupData.naggingCriteria}
-                                onChange={handleChange}
-                                className="mt-1 p-3 block w-full border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                                placeholder="e.g., Don't message me after 10 PM. Stop after 5 failed attempts."
-                            />
-                            <p className="text-sm text-gray-500 mt-1">Aeryth will stop or ease up based on this rule.</p>
+                            <label className="block text-lg font-bold text-gray-700 mb-2">Routine criteria</label>
+                            <input type="text" name="routineCriteria" value={setupData.routineCriteria} onChange={handleChange} className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500" placeholder="e.g., Don't message me after 10 PM." />
                         </div>
                     </div>
-                    
                     <div className="flex space-x-4 mt-8">
-                        <button
-                            onClick={handleSaveSetup}
-                            disabled={setupData.isSaving}
-                            className={`flex-1 py-3 rounded-lg font-bold text-white transition duration-300 shadow-lg ${
-                                setupData.isSaving
-                                    ? 'bg-gray-400 cursor-not-allowed'
-                                    : 'bg-indigo-600 hover:bg-indigo-700'
-                            }`}
-                        >
-                            {setupData.isSaving 
-                                ? 'Saving...' 
-                                : (isFirstTimeSetup ? 'Complete Setup' : 'Save Changes')}
-                        </button>
-                        
-                        {/* Skip for Now (Only visible on first time setup) */}
-                        {isFirstTimeSetup && (
-                            <button 
-                                onClick={handleSkip}
-                                disabled={setupData.isSaving}
-                                className={`py-3 px-6 rounded-lg font-bold transition duration-300 ${
-                                    setupData.isSaving
-                                        ? 'text-gray-400 cursor-not-allowed'
-                                        : 'text-indigo-600 hover:text-indigo-800'
-                                }`}
-                            >
-                                Skip for Now
-                            </button>
-                        )}
+                        <button onClick={handleSaveSetup} disabled={setupData.isSaving} className={`flex-1 py-3 rounded-lg font-bold text-white transition shadow-lg ${setupData.isSaving ? 'bg-gray-400' : 'bg-violet-500 hover:bg-violet-600'}`}>{setupData.isSaving ? 'Saving...' : (isFirstTimeSetup ? 'Complete Setup' : 'Save Changes')}</button>
+                        {isFirstTimeSetup && <button onClick={handleSaveSetup} disabled={setupData.isSaving} className={`py-3 px-6 rounded-lg font-bold transition ${setupData.isSaving ? 'text-gray-400' : 'text-violet-500 hover:text-violet-700'}`}>Skip</button>}
                     </div>
                 </div>
             </div>
         );
     };
 
-    // --- UI COMPONENTS: LAYOUT & SIDEBAR ---
-
-    const Sidebar = ({ userId, routines, currentView, setCurrentView, toggleSidebar }) => {
-        // Find the next upcoming routine
+    const Sidebar = ({ toggleSidebar }) => {
         const now = new Date();
-        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        
-        // Simple logic to find the next routine by time
-        const nextRoutine = routines.find(r => r.dailyTime > currentTime) || routines[0];
-        
-        const SidebarButton = ({ view, icon, label }) => (
-            <button
-                onClick={() => setCurrentView(view)}
-                className={`flex items-center w-full p-3 rounded-xl transition duration-150 ${
-                    currentView === view 
-                        ? 'bg-indigo-100 text-indigo-800 font-bold shadow-inner'
-                        : 'text-gray-700 hover:bg-gray-200'
-                }`}
-            >
-                <span className="text-xl mr-3">{icon}</span>
-                {label}
-            </button>
-        );
+        const eightHoursFromNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+        const upcomingRoutines = routines
+            .filter(r => {
+                const [hours, minutes] = r.dailyTime.split(':');
+                const routineTimeToday = new Date();
+                routineTimeToday.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+                return routineTimeToday >= now && routineTimeToday <= eightHoursFromNow;
+            })
+            .sort((a, b) => (a.dailyTime > b.dailyTime) ? 1 : -1)
+            .slice(0, 2);
 
         return (
-            <div className="w-80 flex-shrink-0 h-full p-4 space-y-4 bg-white overflow-y-auto relative">
-                
-                {/* Close Button (Universal toggle icon) */}
-                <button
-                    onClick={toggleSidebar}
-                    className="absolute right-4 top-4 z-50 p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg transition"
-                    title="Toggle Sidebar"
-                >
-                    {/* Hamburger Icon (used for universal toggle) */}
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-                    </svg>
-                </button>
-                
+            <div className="w-80 flex-shrink-0 h-full p-4 space-y-4 bg-white overflow-y-auto relative flex flex-col">
+                <button onClick={toggleSidebar} className="absolute left-4 top-4 z-50 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Toggle Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>
                 <div className="text-center pb-2 border-b pt-10">
-                    <h3 className="text-2xl font-extrabold text-indigo-700">Aeryth</h3>
+                    <h3 className="text-2xl font-extrabold text-violet-600">Aeryth</h3>
                     <p className="text-sm text-gray-500">Rhythm Partner</p>
-                    <p className="text-xs text-gray-400 truncate" title={userId}>ID: {userId ? userId.slice(0, 8) + '...' : '...'}</p>
-                </div>
-                
-                {/* Search Bar (Future Feature) */}
-                <div className="mb-4">
-                    <input 
-                        type="text" 
-                        placeholder="Search routines or diary..." 
-                        className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500"
-                        disabled 
-                    />
                 </div>
 
-                {/* Next Routine (Main List) */}
+                <button onClick={() => handleNewChat()} className="w-full text-center py-3 mb-2 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">+ New Chat</button>
+                <input type="text" placeholder="Search routines..." className="w-full p-3 border rounded-xl focus:ring-violet-500" disabled />
+
                 <div className="space-y-2">
-                    <h4 className="text-sm font-semibold text-gray-800">Next Routine:</h4>
-                    {nextRoutine ? (
-                        <div className="p-3 bg-indigo-50 rounded-xl border-l-4 border-indigo-500 shadow-md">
-                            <p className="text-sm text-indigo-800 font-bold">{nextRoutine.goal}</p>
-                            <p className="text-xs text-indigo-600 mt-1">Starts at: {nextRoutine.dailyTime}</p>
+                    <h4 className="text-sm font-semibold text-gray-800">Next Routines (in 8 hours):</h4>
+                    {upcomingRoutines.length > 0 ? upcomingRoutines.map(r => (
+                        <div key={r.id} className="p-3 bg-violet-50 rounded-xl border-l-4 border-violet-400 shadow-md">
+                            <p className="text-sm text-violet-800 font-bold">{r.goal}</p>
+                            <p className="text-xs text-violet-600 mt-1">Starts at: {r.dailyTime}</p>
                         </div>
-                    ) : (
-                        <p className="text-sm text-gray-500 italic p-3">No active goals. Set one!</p>
-                    )}
-                    
-                    <h4 className="text-sm font-semibold text-gray-800 pt-3 border-t mt-3">All Routines (Phase 3):</h4>
-                    <div className="max-h-40 overflow-y-auto space-y-2">
-                        {routines.map(r => (
-                            <div key={r.id} className="p-2 bg-gray-50 rounded-lg text-xs text-gray-700 border border-gray-200">
-                                <span className="font-medium">{r.goal}</span> ({r.dailyTime})
-                            </div>
-                        ))}
-                    </div>
+                    )) : (<p className="text-sm text-gray-500 italic p-3">No upcoming routines.</p>)}
                 </div>
 
-                {/* Navigation Buttons (Lower Quarter) */}
-                <div className="pt-4 border-t border-gray-200 space-y-2">
-                    <h4 className="text-sm font-semibold text-gray-800">Navigation:</h4>
-                    <SidebarButton view="explore" icon="💬" label="Chat with Aeryth" />
-                    <SidebarButton view="calendar" icon="🗓️" label="Calendar (Phase 4)" />
-                    <SidebarButton view="diary" icon="✍️" label="Diary (Phase 3)" />
-                    <SidebarButton view="report" icon="📈" label="Progress Report (Phase 4)" />
+                <h4 className="text-sm font-semibold text-gray-800 pt-3 border-t mt-3">Routines:</h4>
+                <div className="flex-1 overflow-y-auto space-y-2">
+                    {chats.map(chat => (
+                         <div key={chat.id} className={`flex items-center w-full p-3 rounded-xl transition group ${currentChatId === chat.id ? 'bg-violet-100' : 'hover:bg-gray-100'}`}>
+                            <button onClick={() => setCurrentChatId(chat.id)} className={`flex-1 text-left text-sm ${currentChatId === chat.id ? 'text-violet-800 font-bold' : 'text-gray-700'}`}>{chat.name}</button>
+                            <button onClick={() => handleDeleteChat(chat.id, chat.name)} className="ml-2 p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.134-2.036-2.134H8.716c-1.12 0-2.036.954-2.036 2.134v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg></button>
+                         </div>
+                    ))}
                 </div>
-                
-                {/* Settings Button */}
-                <div className="pt-4 border-t border-gray-200">
-                    <SidebarButton view="settings" icon="⚙️" label="Settings & Setup" />
+
+                <div className="pt-4 border-t space-y-2">
+                    <button onClick={() => setCurrentView('calendar')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'calendar' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">🗓️</span>Calendar</button>
+                    <button onClick={() => setCurrentView('diary')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'diary' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">✍️</span>Diary</button>
+                    <button onClick={() => setCurrentView('settings')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'settings' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">⚙️</span>Settings</button>
                 </div>
             </div>
         );
     };
     
-    // Component to display a single message
-    const ChatMessage = ({ sender, text, timestamp }) => {
-        const isUser = sender === 'user';
-        const isSystem = sender === 'system';
-        
-        if (isSystem) {
-             return (
-                 <div className="flex justify-center">
-                     <div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">
-                         [SYSTEM ERROR]: {text}
-                     </div>
-                 </div>
-             )
-        }
+    const SetGoalView = ({ toggleSidebar, isSidebarOpen }) => {
+        const [goal, setGoal] = useState('');
+        const [time, setTime] = useState('09:00');
+        const [days, setDays] = useState([]);
+        const [isSaving, setIsSaving] = useState(false);
+        const availableDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        const handleDayToggle = (day) => setDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]);
+
+        const handleSaveGoal = async () => {
+            if (!goal.trim() || !time || days.length === 0 || !currentChatId) {
+                alertUser("Please fill out all fields: goal, time, and at least one day.");
+                return;
+            }
+            setIsSaving(true);
+            
+            const isOverlap = routines.some(r => r.dailyTime === time && r.days.some(d => days.includes(d)));
+            if (isOverlap) {
+                alertUser(`Overlap detected! Please choose a different time or day.`);
+                setIsSaving(false);
+                return;
+            }
+
+            try {
+                const newRoutine = { goal, dailyTime: time, days, chatId: currentChatId, createdAt: serverTimestamp() };
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/routines`), newRoutine);
+                await setDoc(doc(db, `artifacts/${appId}/users/${userId}/chat_sessions`, currentChatId), { name: goal }, { merge: true });
+                alertUser("Routine successfully set!");
+                setCurrentView('explore');
+            } catch (error) {
+                console.error("Failed to save goal:", error);
+            } finally {
+                setIsSaving(false);
+            }
+        };
 
         return (
-            <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                <div 
-                    className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${
-                        isUser 
-                            ? 'bg-indigo-600 text-white rounded-br-none' 
-                            : 'bg-white text-gray-800 rounded-tl-none border border-gray-200'
-                    }`}
-                >
-                    <p className="whitespace-pre-wrap">{text}</p>
-                    <span className={`block text-xs mt-1 ${isUser ? 'text-indigo-200' : 'text-gray-400'}`}>
-                        {timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}
-                    </span>
+            <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">
+                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
+                <div className="text-left p-8 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500">
+                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">Set a New Routine</h2>
+                    <p className="text-gray-600 mb-6">This goal will be linked to the current chat.</p>
+                    <div className="space-y-4">
+                        <div><label className="font-bold text-gray-700">Goal:</label><input type="text" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="e.g., Study History for 1 hour" className="mt-1 p-3 w-full border rounded-lg"/></div>
+                        <div><label className="font-bold text-gray-700">Time:</label><input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
+                        <div><label className="font-bold text-gray-700">Repeat on:</label><div className="flex justify-center space-x-1 mt-2">{availableDays.map(d => <button key={d} onClick={() => handleDayToggle(d)} className={`w-10 h-10 font-bold rounded-full transition ${days.includes(d) ? 'bg-violet-500 text-white' : 'bg-gray-200 text-gray-600'}`}>{d[0]}</button>)}</div></div>
+                    </div>
+                     <div className="flex space-x-4 mt-8">
+                        <button onClick={handleSaveGoal} disabled={isSaving} className={`flex-1 py-3 rounded-lg font-bold text-white transition shadow-lg ${isSaving ? 'bg-gray-400':'bg-violet-500 hover:bg-violet-600'}`}>{isSaving ? 'Saving...' : 'Set Goal'}</button>
+                        <button onClick={() => setCurrentView('explore')} className="py-3 px-6 rounded-lg font-bold transition text-violet-500 hover:text-violet-700">Cancel</button>
+                    </div>
                 </div>
             </div>
         );
     };
 
-
-    const ChatView = ({ toggleSidebar, isSidebarOpen, messages, handleSendMessage, isAILoading, chatEndRef, userSettings, setCurrentView }) => {
+    const ChatView = ({ toggleSidebar, isSidebarOpen }) => {
         const [input, setInput] = useState('');
-        
-        const handleSubmit = (e) => {
-            e.preventDefault();
-            if (input.trim()) {
-                handleSendMessage(input);
-                setInput('');
-            }
-        };
-
+        const handleSubmit = (e) => { e.preventDefault(); if (input.trim()) { handleSendMessage(input); setInput(''); } };
         return (
-            <div className="flex-1 flex flex-col h-full bg-gray-100 relative">
-                {/* Sidebar Toggle Button (Open) - Only visible when sidebar is CLOSED */}
-                {!isSidebarOpen && (
-                    <button
-                        onClick={toggleSidebar}
-                        className="absolute right-4 top-4 z-10 p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg transition"
-                        title="Open Sidebar"
-                    >
-                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-                        </svg>
-                    </button>
-                )}
-
-                {/* Chat Messages Area - Scrollable area with padding for the fixed footer/input */}
+            <div className="flex-1 flex flex-col h-full bg-gray-50 relative">
+                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
                 <div className="flex-1 p-6 space-y-4 overflow-y-auto" style={{ paddingBottom: '120px' }}> 
-                    <div className="text-center text-gray-500 italic mb-6">
-                        Aeryth's Tone: <span className="font-semibold text-indigo-600">{userSettings?.aerythTone || 'Default'}</span> | Current Mode: Chat
-                    </div>
-                    
-                    {messages.map((msg, index) => (
-                        <ChatMessage key={index} sender={msg.sender} text={msg.text} timestamp={msg.timestamp} />
-                    ))}
-
-                    {isAILoading && (
-                        <div className="flex justify-start">
-                            <div className="bg-white text-gray-600 px-4 py-3 rounded-2xl rounded-tl-none shadow-md flex items-center space-x-2 border border-gray-200">
-                                 <svg className="animate-spin h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                <span>Aeryth is calculating the optimal push...</span>
-                            </div>
-                        </div>
-                    )}
-                    
+                    <div className="text-center text-gray-500 italic mb-6">Aeryth's Tone: <span className="font-semibold text-violet-600">{userSettings?.aerythTone || 'Default'}</span></div>
+                    {messages.map((msg, index) => (<ChatMessage key={msg.id || index} {...msg} />))}
+                    {isAILoading && (<div className="flex justify-start"><div className="bg-white text-gray-600 px-4 py-3 rounded-2xl shadow-md flex items-center space-x-2 border"><svg className="animate-spin h-5 w-5 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Aeryth is thinking...</span></div></div>)}
                     <div ref={chatEndRef} />
                 </div>
-
-                {/* Input and Navigation Area - Fixed at the bottom */}
-                <form onSubmit={handleSubmit} className="absolute bottom-0 w-full p-4 border-t border-gray-200 bg-white">
+                <form onSubmit={handleSubmit} className="absolute bottom-0 w-full p-4 border-t bg-white">
                     <div className="flex justify-around mb-3">
-                        <button 
-                            type="button"
-                            onClick={() => setCurrentView('explore')} 
-                            className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition duration-150 shadow-md ${currentView === 'explore' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-indigo-100'}`}
-                            title="Chat for ideas and general conversation"
-                        >
-                            Explore (Chat)
-                        </button>
-                        <button 
-                            type="button"
-                            onClick={() => setCurrentView('setGoal')} 
-                            className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition duration-150 shadow-md ${currentView === 'setGoal' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-indigo-100'}`}
-                            title="Set a structured routine goal"
-                        >
-                            Set Goal (Phase 3)
-                        </button>
-                        <button 
-                            type="button"
-                            onClick={() => setCurrentView('diary')} 
-                            className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition duration-150 shadow-md ${currentView === 'diary' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-indigo-100'}`}
-                            title="Record today's progress and thoughts"
-                        >
-                            Diary (Phase 3)
-                        </button>
+                        <button type="button" onClick={() => setCurrentView('explore')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'explore' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Explore</button>
+                        <button type="button" onClick={() => setCurrentView('setGoal')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'setGoal' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Set Goal</button>
+                        <button type="button" onClick={() => setCurrentView('diary')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'diary' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Diary</button>
                     </div>
-
                     <div className="flex space-x-3">
-                        <input
-                            type="text"
-                            placeholder={isAILoading ? "Waiting for Aeryth..." : "Ask Aeryth anything about your task..."}
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            disabled={isAILoading}
-                            className="flex-1 p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition shadow-inner"
-                        />
-                        <button 
-                            type="submit"
-                            disabled={isAILoading || !input.trim()}
-                            className={`px-6 py-3 rounded-xl font-bold transition duration-300 shadow-lg ${
-                                isAILoading || !input.trim()
-                                    ? 'bg-gray-400 text-gray-600 cursor-not-allowed'
-                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                            }`}
-                        >
-                            {isAILoading ? 'Thinking' : 'Send'}
-                        </button>
+                        <input type="text" placeholder={isAILoading ? "Waiting for Aeryth..." : "Start exploring a new task..."} value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-500 shadow-inner"/>
+                        <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold transition shadow-lg ${isAILoading || !input.trim() ? 'bg-gray-400 cursor-not-allowed' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>{isAILoading ? '...' : 'Send'}</button>
                     </div>
                 </form>
             </div>
         );
     };
-    
-    // Placeholder Views for other main screens
-    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => (
-        <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">
-            {/* Sidebar Toggle Button (Open) - Only visible when sidebar is CLOSED */}
-            {!isSidebarOpen && (
-                <button
-                    onClick={toggleSidebar}
-                    className="absolute right-4 top-4 z-10 p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg transition"
-                    title="Open Sidebar"
-                >
-                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-                    </svg>
-                </button>
-            )}
-            <div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-indigo-600">
-                <h2 className="text-3xl font-extrabold text-indigo-700 mb-4">{title}</h2>
-                <p className="text-xl text-gray-600">This view is coming in a later phase!</p>
-                <p className="text-gray-500 mt-2">Current View: **{title}** is ready for implementation.</p>
-                <button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-indigo-600 hover:text-indigo-800 font-medium">
-                    Go Back to Chat
-                </button>
-            </div>
-        </div>
-    );
-    
+
+    // --- 5. MAIN RENDER LOGIC ---
     const MainViewRenderer = () => {
-        // Function to toggle the sidebar
         const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
-
-        // Map 'settings' view back to the SetupScreen component
-        if (currentView === 'settings') {
-            // Pass authStatus and setCurrentView so SetupScreen knows it's being used as an editor
-            return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
-        }
-        
-        // Map other views to components, passing props
         switch (currentView) {
-            case 'explore':
-                return <ChatView 
-                    toggleSidebar={toggleSidebar} 
-                    isSidebarOpen={isSidebarOpen} 
-                    messages={messages}
-                    handleSendMessage={handleSendMessage}
-                    isAILoading={isAILoading}
-                    chatEndRef={chatEndRef}
-                    userSettings={userSettings}
-                    setCurrentView={setCurrentView}
-                />;
-            case 'setGoal':
-                return <PlaceholderView title="Set Goal (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
-            case 'diary':
-                return <PlaceholderView title="Diary Entry (Phase 3)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
-            case 'calendar':
-                return <PlaceholderView title="Calendar View (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
-            case 'report':
-                return <PlaceholderView title="Progress Report (Phase 4)" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
-            default:
-                return <PlaceholderView title="Unknown View" toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} setCurrentView={setCurrentView} />;
+            case 'settings': return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
+            case 'explore': return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+            case 'setGoal': return <SetGoalView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+            case 'diary': return <PlaceholderView title="Diary Entry (Phase 3)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
+            case 'calendar': return <PlaceholderView title="Calendar View (Phase 4)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
+            default: return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
         }
     }
 
-
-    // --- MAIN RENDER LOGIC ---
-
-    if (authStatus === 'loading' || !isAuthReady) {
-        return <LoadingScreen />;
-    }
-
-    if (authStatus === 'login') {
-        return <LoginScreen />;
-    }
-
-    if (authStatus === 'setup') {
-        // Force full screen setup on first login
-        return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
-    }
+    if (authStatus === 'loading' || !isAuthReady) return <LoadingScreen />;
+    if (authStatus === 'login') return <LoginScreen />;
+    if (authStatus === 'setup') return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
     
-    // Main App Layout using Flexbox for dynamic resizing
+    // FIX: Main layout updated to place sidebar on the right.
     return (
         <div className="flex h-screen w-full font-sans bg-gray-100 antialiased overflow-hidden">
-            
-            {/* 1. Main Content Area (Dynamically shrinks when sidebar is open) */}
-            <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="flex-1 min-w-0">
                 <MainViewRenderer />
             </div>
-            
-            {/* 2. Right Sidebar Area (Dynamic width and content control) */}
-            <div className={`h-full transition-all duration-300 ${isSidebarOpen ? 'w-80' : 'w-0'} flex-shrink-0 overflow-hidden`}>
-                {/* Inner div with fixed width (w-80) to ensure content looks correct during transition */}
-                <div className={`w-80 bg-white shadow-xl h-full border-l border-gray-200 ${isSidebarOpen ? '' : 'opacity-0 pointer-events-none'}`}>
-                    <Sidebar 
-                        userId={userId} 
-                        routines={routines} 
-                        currentView={currentView} 
-                        setCurrentView={setCurrentView}
-                        toggleSidebar={() => setIsSidebarOpen(false)} 
-                    />
+            <div className={`transition-all duration-300 ${isSidebarOpen ? 'w-80' : 'w-0'} flex-shrink-0 overflow-hidden`}>
+                <div className="w-80 bg-white shadow-xl h-full border-l border-gray-200">
+                    <Sidebar toggleSidebar={() => setIsSidebarOpen(false)} />
                 </div>
             </div>
         </div>
@@ -822,3 +523,4 @@ const App = () => {
 };
 
 export default App;
+
