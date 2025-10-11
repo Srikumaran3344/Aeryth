@@ -36,3 +36,6 @@ Finally the third is diary which is a new chat per day - this chat is stored in 
 
 8. I have a lot more to change on the AIs tone settings- as far as i checked the current canvas code- it is using the about you filled by the user too frequently saying that you told you are like this in each message and that is why its reply is that way- I do not want the AI to delibrately say their about status to them since this is something they feel guilty and already know, instead it should use this to find the user personality and train itself relative to that and reply the user accordingly.
 
+---Change backkground to gradient light purle to white
+---scrolling feature is not smooth to continue
+--phase two is doen phase three can be started

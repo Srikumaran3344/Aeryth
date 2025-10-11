@@ -75,6 +75,44 @@ Begin conversation.`;
     return withBackoff(fetcher);
 };
 
+// --- NEW: API Call for Diary ---
+const callGeminiForDiary = async (text, task) => {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
+    
+    let systemPrompt = '';
+    if (task === 'summarize') {
+        systemPrompt = 'Summarize the following diary entry into a concise, reflective paragraph. Focus on the key emotions and events mentioned.';
+    } else if (task === 'correct_grammar') {
+        systemPrompt = 'Correct the grammar and spelling mistakes in the following text. Only output the corrected text, without any introduction or explanation.';
+    }
+
+    if (!systemPrompt) throw new Error("Invalid task for Gemini Diary API.");
+
+    const payload = {
+        contents: [{ parts: [{ text }] }],
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+    };
+
+    const fetcher = async () => {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error("Gemini Diary API error:", errorBody);
+            throw new Error(`API call failed: ${response.status}`);
+        }
+        const result = await response.json();
+        const resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!resultText) throw new Error("Invalid API response.");
+        return resultText;
+    };
+
+    return withBackoff(fetcher);
+};
+
 
 // --- FIREBASE AND AUTH SETUP ---
 let db = null;
@@ -93,6 +131,9 @@ const App = () => {
     const [userSettings, setUserSettings] = useState(null); 
     const [isAILoading, setIsAILoading] = useState(false); 
     
+    // -- NEW: Diary State --
+    const [diaryEntries, setDiaryEntries] = useState([]);
+
     // -- NEW: Multi-Chat State --
     const [chats, setChats] = useState([]);
     const [currentChatId, setCurrentChatId] = useState(null);
@@ -103,7 +144,11 @@ const App = () => {
 
     // FIX: Dedicated useEffect for scrolling to the bottom whenever messages change.
     useEffect(() => {
-        scrollToBottom();
+        // Use a timeout to ensure the DOM has updated before scrolling
+        const timer = setTimeout(() => {
+            scrollToBottom();
+        }, 100);
+        return () => clearTimeout(timer);
     }, [messages]);
 
     const alertUser = (message) => console.log(`[Aeryth Alert]: ${message}`); // Placeholder for a proper modal
@@ -166,10 +211,21 @@ const App = () => {
             }
         });
 
+        const diaryQuery = query(collection(db, `artifacts/${appId}/users/${userId}/diary_entries`), orderBy('createdAt', 'desc'));
+        const unsubDiary = onSnapshot(diaryQuery, (snapshot) => {
+            const entries = snapshot.docs.map(doc => ({ 
+                id: doc.id, 
+                ...doc.data(),
+                createdAt: doc.data().createdAt?.toDate() || new Date()
+            }));
+            setDiaryEntries(entries);
+        });
+
         return () => {
             unsubSettings();
             unsubRoutines();
             unsubChatSessions();
+            unsubDiary();
         };
     }, [isAuthReady, userId]);
 
@@ -295,7 +351,7 @@ const App = () => {
     const LoadingScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500"><svg className="animate-spin h-8 w-8 text-violet-500 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p className="text-lg text-gray-700 font-semibold">Connecting to Aeryth's Core...</p></div></div>);
     const LoginScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl w-96"><h1 className="text-4xl font-extrabold text-violet-600 mb-2">Welcome to Aeryth</h1><p className="text-gray-500 mb-6">Your shield of rhythm against procrastination.</p><button onClick={async () => { setAuthStatus('loading'); if (auth) await signInAnonymously(auth); }} className="w-full py-3 mb-3 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">Sign In as Guest</button><button className="w-full py-3 rounded-lg font-bold text-gray-700 bg-gray-200 transition shadow-md" disabled>Sign In with Google</button></div></div>);
     const ChatMessage = ({ sender, text, timestamp }) => { const isUser = sender === 'user', isSystem = sender === 'system'; if (isSystem) return <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM ERROR]: {text}</div></div>; return <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}><div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? 'bg-violet-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-tl-none border'}`}><p className="whitespace-pre-wrap">{text}</p><span className={`block text-xs mt-1 ${isUser ? 'text-violet-200' : 'text-gray-400'}`}>{timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}</span></div></div>;};
-    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => ( <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">{!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}<div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500"><h2 className="text-3xl font-extrabold text-violet-600 mb-4">{title}</h2><p className="text-xl text-gray-600">This view is coming in a later phase!</p><button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-violet-500 hover:text-violet-700 font-medium">Go Back to Chat</button></div></div>);
+    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => ( <div className="p-8 h-full flex flex-col items-center justify-center bg-transparent relative">{!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}<div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500"><h2 className="text-3xl font-extrabold text-violet-600 mb-4">{title}</h2><p className="text-xl text-gray-600">This view is coming in a later phase!</p><button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-violet-500 hover:text-violet-700 font-medium">Go Back to Chat</button></div></div>);
     
     const SetupScreen = ({ authStatus, setCurrentView }) => {
         const isFirstTimeSetup = authStatus === 'setup';
@@ -321,7 +377,7 @@ const App = () => {
         };
         
         return (
-            <div className="flex justify-center items-center h-screen bg-gray-100 p-4 overflow-y-auto">
+            <div className="flex justify-center items-center h-screen bg-transparent p-4 overflow-y-auto">
                 <div className="w-full max-w-2xl p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500 my-8">
                     {!isFirstTimeSetup && <button onClick={() => setCurrentView('explore')} className="text-violet-500 hover:text-violet-700 font-semibold mb-4 flex items-center"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>Back</button>}
                     <h2 className="text-3xl font-extrabold text-violet-600 mb-2">{isFirstTimeSetup ? "Aeryth Initial Setup" : "Edit Aeryth Settings"}</h2>
@@ -444,8 +500,8 @@ const App = () => {
         };
 
         return (
-            <div className="p-8 h-full flex flex-col items-center justify-center bg-gray-100 relative">
-                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
+            <div className="p-8 h-full flex flex-col items-center justify-center bg-transparent relative">
+                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
                 <div className="text-left p-8 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500">
                     <h2 className="text-3xl font-extrabold text-violet-600 mb-2">Set a New Routine</h2>
                     <p className="text-gray-600 mb-6">This goal will be linked to the current chat.</p>
@@ -467,8 +523,8 @@ const App = () => {
         const [input, setInput] = useState('');
         const handleSubmit = (e) => { e.preventDefault(); if (input.trim()) { handleSendMessage(input); setInput(''); } };
         return (
-            <div className="flex-1 flex flex-col h-full bg-gray-50 relative">
-                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute left-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
+            <div className="flex-1 flex flex-col h-full bg-transparent relative">
+                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
                 <div className="flex-1 p-6 space-y-4 overflow-y-auto" style={{ paddingBottom: '120px' }}> 
                     <div className="text-center text-gray-500 italic mb-6">Aeryth's Tone: <span className="font-semibold text-violet-600">{userSettings?.aerythTone || 'Default'}</span></div>
                     {messages.map((msg, index) => (<ChatMessage key={msg.id || index} {...msg} />))}
@@ -490,6 +546,132 @@ const App = () => {
         );
     };
 
+    // --- NEW: Diary View Component ---
+    const DiaryView = ({ toggleSidebar, isSidebarOpen, setCurrentView }) => {
+        const [entry, setEntry] = useState('');
+        const [summary, setSummary] = useState('');
+        const [correctedText, setCorrectedText] = useState('');
+        const [processingTask, setProcessingTask] = useState(null); // 'summarize', 'correct', 'save'
+        const [selectedEntry, setSelectedEntry] = useState(null);
+
+        const handleApiCall = async (task) => {
+            if (!entry.trim()) {
+                alertUser("Please write something first.");
+                return;
+            }
+            setProcessingTask(task);
+            try {
+                const result = await callGeminiForDiary(entry, task);
+                if (task === 'summarize') setSummary(result);
+                if (task === 'correct_grammar') setCorrectedText(result);
+            } catch (error) {
+                console.error(`Diary ${task} error:`, error);
+                alertUser(`Failed to ${task}.`);
+            } finally {
+                setProcessingTask(null);
+            }
+        };
+
+        const handleSave = async () => {
+            const finalEntry = correctedText || entry;
+            if (!finalEntry.trim()) {
+                alertUser("Cannot save an empty entry.");
+                return;
+            }
+            setProcessingTask('save');
+            try {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/diary_entries`), {
+                    originalText: entry,
+                    finalText: finalEntry,
+                    summary: summary || 'No summary generated.',
+                    createdAt: serverTimestamp()
+                });
+                setEntry('');
+                setSummary('');
+                setCorrectedText('');
+                alertUser("Diary entry saved!");
+            } catch (error) {
+                console.error("Error saving diary entry:", error);
+            } finally {
+                setProcessingTask(null);
+            }
+        };
+        
+        const viewNewEntryMode = () => {
+            setSelectedEntry(null);
+            setEntry('');
+            setSummary('');
+            setCorrectedText('');
+        }
+
+        const viewPastEntry = (pastEntry) => {
+            setSelectedEntry(pastEntry);
+            setEntry(pastEntry.finalText);
+            setSummary(pastEntry.summary);
+            setCorrectedText('');
+        }
+        
+        const isProcessing = !!processingTask;
+
+        return (
+            <div className="h-full flex bg-transparent relative overflow-hidden">
+                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-20 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
+                
+                {/* Past Entries List */}
+                <div className="w-1/3 h-full bg-white/80 backdrop-blur-sm border-r p-4 flex flex-col">
+                    <h3 className="text-xl font-bold text-violet-700 mb-4">Past Entries</h3>
+                    <button onClick={viewNewEntryMode} className="w-full text-center py-2 mb-3 rounded-lg font-semibold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">+ New Entry</button>
+                    <div className="flex-1 overflow-y-auto space-y-2">
+                        {diaryEntries.map(e => (
+                             <div key={e.id} onClick={() => viewPastEntry(e)} className={`p-3 rounded-lg cursor-pointer border-l-4 transition ${selectedEntry?.id === e.id ? 'bg-violet-100 border-violet-500' : 'bg-gray-50 hover:bg-violet-50 border-gray-300'}`}>
+                                <p className="text-sm font-semibold text-gray-800 truncate">{e.finalText}</p>
+                                <p className="text-xs text-gray-500">{e.createdAt.toLocaleDateString()}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Main Editor */}
+                <div className="flex-1 h-full p-6 flex flex-col">
+                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">{selectedEntry ? "Viewing Entry" : "New Diary Entry"}</h2>
+                    <p className="text-gray-600 mb-4">{selectedEntry ? selectedEntry.createdAt.toLocaleString() : "What's on your mind?"}</p>
+                    
+                    <textarea value={entry} onChange={(e) => setEntry(e.target.value)} disabled={isProcessing || selectedEntry} placeholder="Start writing here..." className="flex-1 w-full p-4 border rounded-lg shadow-inner resize-none text-lg leading-relaxed focus:ring-2 focus:ring-violet-400 disabled:bg-gray-100"></textarea>
+                    
+                    {!selectedEntry && (
+                        <div className="flex space-x-2 mt-4">
+                            <button onClick={() => handleApiCall('correct_grammar')} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-semibold bg-blue-100 text-blue-800 hover:bg-blue-200 disabled:bg-gray-300 transition">
+                                {processingTask === 'correct_grammar' ? 'Checking...' : 'Correct Grammar'}
+                            </button>
+                            <button onClick={() => handleApiCall('summarize')} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-semibold bg-indigo-100 text-indigo-800 hover:bg-indigo-200 disabled:bg-gray-300 transition">
+                                {processingTask === 'summarize' ? 'Summarizing...' : 'Summarize'}
+                            </button>
+                            <button onClick={handleSave} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 disabled:bg-gray-400 transition">
+                                {processingTask === 'save' ? 'Saving...' : 'Save Entry'}
+                            </button>
+                        </div>
+                    )}
+                    
+                    {correctedText && !selectedEntry && (
+                        <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                             <h4 className="font-bold text-blue-800">Suggested Correction:</h4>
+                             <p className="text-blue-900 my-2">{correctedText}</p>
+                             <button onClick={() => { setEntry(correctedText); setCorrectedText(''); }} className="text-sm font-semibold text-blue-600 hover:text-blue-800">Accept Correction</button>
+                        </div>
+                    )}
+
+                    {summary && (
+                        <div className="mt-4 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+                             <h4 className="font-bold text-indigo-800">AI Summary:</h4>
+                             <p className="text-indigo-900 my-2">{summary}</p>
+                        </div>
+                    )}
+
+                </div>
+            </div>
+        );
+    }
+
     // --- 5. MAIN RENDER LOGIC ---
     const MainViewRenderer = () => {
         const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
@@ -497,7 +679,7 @@ const App = () => {
             case 'settings': return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
             case 'explore': return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
             case 'setGoal': return <SetGoalView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
-            case 'diary': return <PlaceholderView title="Diary Entry (Phase 3)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
+            case 'diary': return <DiaryView {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
             case 'calendar': return <PlaceholderView title="Calendar View (Phase 4)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
             default: return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
         }
@@ -509,7 +691,7 @@ const App = () => {
     
     // FIX: Main layout updated to place sidebar on the right.
     return (
-        <div className="flex h-screen w-full font-sans bg-gray-100 antialiased overflow-hidden">
+        <div className="flex h-screen w-full font-sans bg-gradient-to-br from-violet-50 to-fuchsia-50 antialiased overflow-hidden">
             <div className="flex-1 min-w-0">
                 <MainViewRenderer />
             </div>
@@ -523,4 +705,5 @@ const App = () => {
 };
 
 export default App;
+
 
