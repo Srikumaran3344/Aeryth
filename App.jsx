@@ -31,7 +31,6 @@ const callGeminiAPI = async (chatHistory, userSettings, routines) => {
     }));
 
     const currentChatId = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].chatId : null;
-    // MODIFIED AI INSTRUCTION
     const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and subtly guiding companion. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
     
 Use the user profile information to deeply understand their personality, but NEVER explicitly mention it. Your understanding should be implicit and reflected in your tone.
@@ -40,12 +39,21 @@ Use the user profile information to deeply understand their personality, but NEV
 [User Profile Context]
 About User: ${userSettings?.userInfo || 'No profile information provided.'}
 Aeryth's Tone Setting: ${userSettings?.aerythTone || 'Friendly'}
-User's Routine Criteria: ${userSettings?.routineCriteria || 'No specific criteria provided.'}
 
 [Task Context]
 Current Active Goals/Routines for this chat: ${currentChatId ? routines.filter(r => r.chatId === currentChatId).map(r => r.goal).join('; ') : 'None yet.'}
+Conversation Length: ${chatHistory.length} turns.
 
-**CRITICAL INSTRUCTION:** If no goals are listed for the current chat, this is an 'explore' session. Your primary objective is to help the user clarify their thoughts and guide them toward setting a concrete, actionable goal using the 'Set Goal' feature. Persuade them that defining a goal is the crucial first step before any work can begin. Frame goal-setting as the main task. For example: "That's a great starting point. To make sure we tackle this effectively, let's set a formal goal. What would be a good name for this routine?" or "Before we dive in, let's get this scheduled. When is the best time to work on this?"
+---
+**PRIMARY DIRECTIVE:**
+
+1.  **EXPLORE PHASE (No Goal Set):**
+    * Your primary objective is to help the user clarify their thoughts on a task or goal.
+    * **NUDGE:** If the conversation length is 3 or 6, and no goal is set for this chat, gently ask the user if they are ready to commit to a goal. Example: "This is a productive discussion. Are you feeling ready to set this as a formal routine?"
+    * **HANDLE COMMITMENT:** If the user expresses clear intent to set a goal (e.g., "yes", "okay", "let's do it"), your IMMEDIATE and ONLY next response MUST be to ask about their preferred tracking style. Ask this exact question: "Excellent. To keep you on track, should I assign you small tasks and ask for evidence of completion, or should I just act as a simple reminder? Please reply with 'EVIDENCE' or 'REMINDER'." Do not add any other text to this response.
+
+2.  **GOAL PHASE (Goal is Set):**
+    * Shift your focus to breaking down the goal, offering encouragement, and checking in on progress based on the user's chosen tracking style.
 ---
 
 Begin conversation.`;
@@ -139,6 +147,10 @@ const App = () => {
     const [currentChatId, setCurrentChatId] = useState(null);
     const [messages, setMessages] = useState([]); 
     
+    // -- NEW: Goal Setting State --
+    const [goalFormData, setGoalFormData] = useState({});
+    const [pendingTrackingStyle, setPendingTrackingStyle] = useState(null);
+
     const chatEndRef = useRef(null);
     const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
 
@@ -305,19 +317,28 @@ const App = () => {
             chatId: currentChatId
         };
         
-        // No optimistic update needed since Firestore listener handles it
+        await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
+            ...userMessage,
+            timestamp: serverTimestamp() 
+        });
         
-        try {
+        const upperInput = input.trim().toUpperCase();
+        if (upperInput === 'EVIDENCE' || upperInput === 'REMINDER') {
+            setPendingTrackingStyle(upperInput.toLowerCase());
+            const aiResponse = {
+                sender: 'aeryth',
+                text: "Perfect. I've noted your preference. Now, please use the 'Set Goal' button to fill in the details like time and days.",
+                timestamp: new Date(),
+                chatId: currentChatId
+            };
             await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-                ...userMessage,
-                timestamp: serverTimestamp() 
+                ...aiResponse,
+                timestamp: serverTimestamp()
             });
-        } catch (error) {
-            console.error("Failed to save user message:", error);
+            return;
         }
-        
-        setIsAILoading(true);
 
+        setIsAILoading(true);
         const apiHistory = [...messages, userMessage]; 
 
         try {
@@ -350,7 +371,22 @@ const App = () => {
 
     const LoadingScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500"><svg className="animate-spin h-8 w-8 text-violet-500 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p className="text-lg text-gray-700 font-semibold">Connecting to Aeryth's Core...</p></div></div>);
     const LoginScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl w-96"><h1 className="text-4xl font-extrabold text-violet-600 mb-2">Welcome to Aeryth</h1><p className="text-gray-500 mb-6">Your shield of rhythm against procrastination.</p><button onClick={async () => { setAuthStatus('loading'); if (auth) await signInAnonymously(auth); }} className="w-full py-3 mb-3 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">Sign In as Guest</button><button className="w-full py-3 rounded-lg font-bold text-gray-700 bg-gray-200 transition shadow-md" disabled>Sign In with Google</button></div></div>);
-    const ChatMessage = ({ sender, text, timestamp }) => { const isUser = sender === 'user', isSystem = sender === 'system'; if (isSystem) return <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM ERROR]: {text}</div></div>; return <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}><div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? 'bg-violet-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-tl-none border'}`}><p className="whitespace-pre-wrap">{text}</p><span className={`block text-xs mt-1 ${isUser ? 'text-violet-200' : 'text-gray-400'}`}>{timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}</span></div></div>;};
+    const ChatMessage = ({ sender, text, timestamp, type }) => { 
+        const isUser = sender === 'user', isSystem = sender === 'system'; 
+        if (isSystem && type === 'goal_set') {
+            return (
+                <div className="flex justify-center items-center my-4">
+                    <div className="w-full border-t border-violet-200"></div>
+                    <div className="text-center text-sm font-semibold text-violet-600 bg-violet-100 px-4 py-2 rounded-full mx-4 whitespace-nowrap shadow">
+                        🎯 {text}
+                    </div>
+                    <div className="w-full border-t border-violet-200"></div>
+                </div>
+            );
+        }
+        if (isSystem) return <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM ERROR]: {text}</div></div>; 
+        return <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}><div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? 'bg-violet-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-tl-none border'}`}><p className="whitespace-pre-wrap">{text}</p><span className={`block text-xs mt-1 ${isUser ? 'text-violet-200' : 'text-gray-400'}`}>{timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}</span></div></div>;
+    };
     const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => ( <div className="p-8 h-full flex flex-col items-center justify-center bg-transparent relative">{!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}<div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500"><h2 className="text-3xl font-extrabold text-violet-600 mb-4">{title}</h2><p className="text-xl text-gray-600">This view is coming in a later phase!</p><button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-violet-500 hover:text-violet-700 font-medium">Go Back to Chat</button></div></div>);
     
     const SetupScreen = ({ authStatus, setCurrentView }) => {
@@ -415,12 +451,12 @@ const App = () => {
         const eightHoursFromNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
         const upcomingRoutines = routines
             .filter(r => {
-                const [hours, minutes] = r.dailyTime.split(':');
+                const [hours, minutes] = r.startTime.split(':');
                 const routineTimeToday = new Date();
                 routineTimeToday.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
                 return routineTimeToday >= now && routineTimeToday <= eightHoursFromNow;
             })
-            .sort((a, b) => (a.dailyTime > b.dailyTime) ? 1 : -1)
+            .sort((a, b) => (a.startTime > b.startTime) ? 1 : -1)
             .slice(0, 2);
 
         return (
@@ -439,7 +475,7 @@ const App = () => {
                     {upcomingRoutines.length > 0 ? upcomingRoutines.map(r => (
                         <div key={r.id} className="p-3 bg-violet-50 rounded-xl border-l-4 border-violet-400 shadow-md">
                             <p className="text-sm text-violet-800 font-bold">{r.goal}</p>
-                            <p className="text-xs text-violet-600 mt-1">Starts at: {r.dailyTime}</p>
+                            <p className="text-xs text-violet-600 mt-1">Time: {r.startTime} - {r.endTime}</p>
                         </div>
                     )) : (<p className="text-sm text-gray-500 italic p-3">No upcoming routines.</p>)}
                 </div>
@@ -465,31 +501,59 @@ const App = () => {
     
     const SetGoalView = ({ toggleSidebar, isSidebarOpen }) => {
         const [goal, setGoal] = useState('');
-        const [time, setTime] = useState('09:00');
+        const [startTime, setStartTime] = useState('09:00');
+        const [endTime, setEndTime] = useState('10:00');
         const [days, setDays] = useState([]);
         const [isSaving, setIsSaving] = useState(false);
         const availableDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-        const handleDayToggle = (day) => setDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]);
+        useEffect(() => {
+            if (currentChatId && goalFormData[currentChatId]) {
+                const data = goalFormData[currentChatId];
+                setGoal(data.goal || '');
+                setStartTime(data.startTime || '09:00');
+                setEndTime(data.endTime || '10:00');
+                setDays(data.days || []);
+            } else {
+                setGoal(''); setStartTime('09:00'); setEndTime('10:00'); setDays([]);
+            }
+        }, [currentChatId, goalFormData]);
+
+        const handleChange = (field, value) => {
+            const setters = { goal: setGoal, startTime: setStartTime, endTime: setEndTime, days: setDays };
+            if (setters[field]) setters[field](value);
+
+            setGoalFormData(prev => ({
+                ...prev,
+                [currentChatId]: { ...prev[currentChatId], [field]: value }
+            }));
+        };
+
+        const handleDayToggle = (day) => {
+            const newDays = days.includes(day) ? days.filter(d => d !== day) : [...days, day];
+            handleChange('days', newDays);
+        };
 
         const handleSaveGoal = async () => {
-            if (!goal.trim() || !time || days.length === 0 || !currentChatId) {
-                alertUser("Please fill out all fields: goal, time, and at least one day.");
-                return;
+            if (!goal.trim() || !startTime || !endTime || days.length === 0 || !currentChatId) {
+                alertUser("Please fill out all fields: goal, time, and at least one day."); return;
+            }
+            if (!pendingTrackingStyle) {
+                alertUser("Please first tell Aeryth in the chat whether you want 'evidence' or 'reminder' based tracking."); return;
             }
             setIsSaving(true);
             
-            const isOverlap = routines.some(r => r.dailyTime === time && r.days.some(d => days.includes(d)));
-            if (isOverlap) {
-                alertUser(`Overlap detected! Please choose a different time or day.`);
-                setIsSaving(false);
-                return;
-            }
-
             try {
-                const newRoutine = { goal, dailyTime: time, days, chatId: currentChatId, createdAt: serverTimestamp() };
+                const newRoutine = { goal, startTime, endTime, days, chatId: currentChatId, trackingStyle: pendingTrackingStyle, createdAt: serverTimestamp() };
                 await addDoc(collection(db, `artifacts/${appId}/users/${userId}/routines`), newRoutine);
                 await setDoc(doc(db, `artifacts/${appId}/users/${userId}/chat_sessions`, currentChatId), { name: goal }, { merge: true });
+                
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
+                    sender: 'system', type: 'goal_set', text: `Goal Set: ${goal}`, timestamp: serverTimestamp(), chatId: currentChatId
+                });
+
+                setGoalFormData(prev => { const newFormData = {...prev}; delete newFormData[currentChatId]; return newFormData; });
+                setPendingTrackingStyle(null);
                 alertUser("Routine successfully set!");
                 setCurrentView('explore');
             } catch (error) {
@@ -506,8 +570,11 @@ const App = () => {
                     <h2 className="text-3xl font-extrabold text-violet-600 mb-2">Set a New Routine</h2>
                     <p className="text-gray-600 mb-6">This goal will be linked to the current chat.</p>
                     <div className="space-y-4">
-                        <div><label className="font-bold text-gray-700">Goal:</label><input type="text" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="e.g., Study History for 1 hour" className="mt-1 p-3 w-full border rounded-lg"/></div>
-                        <div><label className="font-bold text-gray-700">Time:</label><input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
+                        <div><label className="font-bold text-gray-700">Goal:</label><input type="text" value={goal} onChange={(e) => handleChange('goal', e.target.value)} placeholder="e.g., Study History for 1 hour" className="mt-1 p-3 w-full border rounded-lg"/></div>
+                        <div className="flex space-x-4">
+                            <div className="flex-1"><label className="font-bold text-gray-700">Start Time:</label><input type="time" value={startTime} onChange={(e) => handleChange('startTime', e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
+                            <div className="flex-1"><label className="font-bold text-gray-700">End Time:</label><input type="time" value={endTime} onChange={(e) => handleChange('endTime', e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
+                        </div>
                         <div><label className="font-bold text-gray-700">Repeat on:</label><div className="flex justify-center space-x-1 mt-2">{availableDays.map(d => <button key={d} onClick={() => handleDayToggle(d)} className={`w-10 h-10 font-bold rounded-full transition ${days.includes(d) ? 'bg-violet-500 text-white' : 'bg-gray-200 text-gray-600'}`}>{d[0]}</button>)}</div></div>
                     </div>
                      <div className="flex space-x-4 mt-8">
@@ -678,7 +745,7 @@ const App = () => {
         switch (currentView) {
             case 'settings': return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
             case 'explore': return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
-            case 'setGoal': return <SetGoalView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
+            case 'setGoal': return <SetGoalView {...{toggleSidebar, isSidebarOpen, setGoalFormData, goalFormData, currentChatId, pendingTrackingStyle, setPendingTrackingStyle, alertUser, setCurrentView}} />;
             case 'diary': return <DiaryView {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
             case 'calendar': return <PlaceholderView title="Calendar View (Phase 4)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
             default: return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
@@ -705,5 +772,4 @@ const App = () => {
 };
 
 export default App;
-
 

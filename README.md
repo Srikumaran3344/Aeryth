@@ -36,6 +36,32 @@ Finally the third is diary which is a new chat per day - this chat is stored in 
 
 8. I have a lot more to change on the AIs tone settings- as far as i checked the current canvas code- it is using the about you filled by the user too frequently saying that you told you are like this in each message and that is why its reply is that way- I do not want the AI to delibrately say their about status to them since this is something they feel guilty and already know, instead it should use this to find the user personality and train itself relative to that and reply the user accordingly.
 
----Change backkground to gradient light purle to white
----scrolling feature is not smooth to continue
---phase two is doen phase three can be started
+-- Phase three errors to resolve:
+make scrolling to more smooth instead of going up and down
+make the side bar three lines proper, it displayes to icons on the same time
+set goal typing has issues- enters each time after typing one letter instead of allwoing to type continuously
+Diary changes:
+Currently displays the new Entry and each entry is saved in the left side with the new entry coloumn: since i cannot test it for what happens when the next day arrives i want to make sure:- 
+Change the Past entries into {today's date in this format 11 Oct 25}, that means the entries written on that day are mapped to this date, add a new button below the date "Past entries", when clicked the left side UI is still similar but it shows the dates of the other days before this entry arranged date wise (top is the most recent one) and when user clicks a date, it goes inside it showing the entrie sof that respective day, if tehre is no entry thenthat date is not available
+Remove the summarize button for user, this is a backend tast, that summarizes the entire days entries into a single new entry called Summary of the and added to that respective date at the top of all that days entry, this is auto updated daily after the day ends, so teh structure is :
+Today's Date
+Past Entries button
+|Entry one
+|entry two....
+
+When past entries is clicked the structue changes to
+Back button - goes to current date
+Past Entries:
+|Date one
+|Date two...
+When a date is clicked 
+Back button -goes to teh previous page of past entries date collection
+Date chosen
+|Summary - of all the entries on this date
+|Entry1
+|Entry2... (each entry has the time of entry in it)
+
+Once every month inside the past entries the dates are further stored inside the month name when the next month starts - exampel if october starts all the september entry is stored inside september and also a new monthly summary is added inside that month along with the each day entries
+ALso between the past entries and new entry button there is a search bar to search a specific date/month or chat or time
+user can hover over the entry to delete the entry of required befor ethe day end sif not it is not possbile
+
