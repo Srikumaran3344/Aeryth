@@ -69,12 +69,12 @@ user can hover over the entry to delete the entry of required befor ethe day end
 ##Large changes: currently the model has been running with gemni 2.5, which is cloud side, i want client side APIs using gemini nano so...
 
 1.Main chages to be installed - the diary entry, calendar (this stores the routines) are stored in client side system locally (can ask user for destination to store data/retrieve data)
-2.Since gemini nano does not remember chats it is best to remove the chat data(can be saved in system like whatsapp bbut not required) so we make it simpler 
-- once user sets their routine this is stored in the calendar and a new folder is created in user local storage - that is a new chat history
-- since my goal is a reminder app no need to save the exploore chat history instead only the routine with a sticky note like structure where the user can type their next days goal (so the sticky note stores their previous day current and next day which can be edited by user)
+2.Since gemini nano does not remember chats it is best to remove the chat data(can be saved in system like whatsapp bbut not required) so we make it this way 
+- once user sets their routine vie explore and set goal this is stored in the calendar and a new folder is created in user local storage - that is a new chat history
+- since my goal is a reminder app no need to save the explore chat history so make the explore chat history like a ttemperory chatting area, instead of the chats to be saved, save the routines under the routine in the sideBAr, when we open each routine (like each chat) the routine will be a sticky note like structure where the user can type their next days goal (so the sticky note stores their previous day current and next day which can be edited by user)
 - only three sticky note (user can change colour) current on top, previous and next day side by side below current day, when the day ends (the sticky notes are tagged with the dates) the app automatecially deletes the previous day and updates the current as previous (that is as per respective dates)
 -as for diary they are stored in local device
--character personality and personalisation - at first the user desides the tone of the AI which is saved(can be changed also) under a backend file for personality, where the file is also updated each time the user uses by analysing their current chat and summarising it, so each time the user uses it gets more data which is appended to the backend file, and whenevr the ai prompts it is first propmted with the user personality
+-character personality and personalisation - at first the user decides the tone of the AI, and gives about them which is saved(can be changed also) under a backend file for personality, where the file is also updated each time the user uses this AI by analysing their current chat and summarising it, so each time the user uses it gets more data which is appended to the backend file, and whenevr the ai prompts it is first propmted with the user personality
 
 Notes for me:
 for the user initial persona;lity foind the four type of tutors that user requires and get the prompt that can be used for them.
