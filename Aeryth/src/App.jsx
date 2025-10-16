@@ -36,12 +36,12 @@ const save = (key, value) => {
 let sessions = {}; // in-memory sessions per chat
 
 const ensureModelAvailable = () =>
-  !!(window && window.languageModel && window.languageModel.create);
+  !!(window && window.LanguageModel && window.LanguageModel.create);
 
 async function ensureSession(chatId, systemPrompt) {
   if (!ensureModelAvailable()) throw new Error("Gemini Nano not available.");
   if (!sessions[chatId]) {
-    sessions[chatId] = await window.languageModel.create({
+    sessions[chatId] = await window.LanguageModel.create({
       initialPrompts: [{ role: "system", content: systemPrompt }],
     });
   }
@@ -74,7 +74,7 @@ async function callGeminiDiary(text, task) {
       : null;
   if (!systemPrompt) throw new Error("invalid diary task");
   // Use a transient session
-  const temp = await window.languageModel.create({
+  const temp = await window.LanguageModel.create({
     initialPrompts: [{ role: "system", content: systemPrompt }],
   });
   try {
