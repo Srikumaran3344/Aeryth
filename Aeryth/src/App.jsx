@@ -234,10 +234,10 @@ export default function App() {
 
   /* small UI components */
   const TopPills = ({ view, setView }) => (
-    <div className=" flex justify-around mb-3 gap-3">     
+    <div className="flex-1 flex justify-around mb-3 gap-10">     
       <button
         onClick={() => setView("explore")}
-        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "explore" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "explore" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}
         // Explore must show black text when active per request
       >
         Explore
@@ -245,14 +245,14 @@ export default function App() {
 
       <button
         onClick={() => setView("setGoal")}
-        className={`flex-1 px-4 py-2 rounded-full text-sm font-semibold transition shadow-md ${view === "setGoal" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+        className={`flex-1 px-4 py-2 rounded-full text-sm font-semibold transition shadow-md ${view === "setGoal" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}
       >
         Set Goal
       </button>
 
       <button
         onClick={() => setView("diary")}
-        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "diary" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "diary" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}
       >
         Diary
       </button>
@@ -669,7 +669,7 @@ export default function App() {
             {/* buttons right above chat input */}
             <div className="mt-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 w-full">
                   <TopPills view={currentView} setView={setCurrentView} />
                 </div>
                 <div className="text-sm italic text-gray-500 hidden"> /* space for extras */ </div>
