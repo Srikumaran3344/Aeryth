@@ -1,34 +1,30 @@
 // src/App.jsx
 import React, { useEffect, useRef, useState } from "react";
 
-/* ==================================================
+/* -----------------------
    LocalStorage helpers
-   ================================================== */
+   ----------------------- */
 const reviverDate = (k, v) =>
   typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(v)
     ? new Date(v)
     : v;
-
 const load = (key, fallback) => {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw, reviverDate) : fallback;
-  } catch (e) {
-    console.error("load error", e);
+  } catch {
     return fallback;
   }
 };
 const save = (key, value) => {
   try {
     localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.error("save error", e);
-  }
+  } catch {}
 };
 
-/* ==================================================
+/* -----------------------
    Gemini Nano wrappers (window.LanguageModel)
-   ================================================== */
+   ----------------------- */
 let sessions = {};
 const ensureModelAvailable = () =>
   !!(typeof window !== "undefined" && window.LanguageModel && window.LanguageModel.create);
@@ -49,9 +45,7 @@ async function callGemini(chatId, chatHistory, userSettings, routines) {
 
 User info: ${userSettings?.userInfo || "None"}
 Tone: ${userSettings?.aerythTone || "Friendly"}
-Active goals: ${
-    routines.filter((r) => r.chatId === chatId).map((r) => r.goal).join("; ") || "None"
-  }
+Active goals: ${routines.filter((r) => r.chatId === chatId).map((r) => r.goal).join("; ") || "None"}
 Conversation length: ${chatHistory.length} turns.`;
   const session = await ensureSession(chatId, system);
   const result = await session.prompt(lastMsg);
@@ -78,13 +72,11 @@ async function callGeminiDiary(text, task) {
   }
 }
 
-/* ==================================================
-   App
-   ================================================== */
+/* -----------------------
+   App component
+   ----------------------- */
 export default function App() {
-  /* -----------------------------
-     Persisted app state (localStorage)
-     ----------------------------- */
+  /* persisted state */
   const [userId] = useState(() => load("aeryth_userId", crypto.randomUUID()));
   useEffect(() => save("aeryth_userId", userId), [userId]);
 
@@ -107,9 +99,7 @@ export default function App() {
   const [diaryEntries, setDiaryEntries] = useState(() => load("aeryth_diary_entries", []));
   useEffect(() => save("aeryth_diary_entries", diaryEntries), [diaryEntries]);
 
-  /* -----------------------------
-     UI state
-     ----------------------------- */
+  /* UI state */
   const [currentChatId, setCurrentChatId] = useState(() => chats[0]?.id ?? null);
   const [messages, setMessages] = useState(() => messagesStore.filter((m) => m.chatId === (chats[0]?.id)));
   const [currentView, setCurrentView] = useState("explore"); // explore, setGoal, diary, calendar, settings
@@ -117,11 +107,15 @@ export default function App() {
   const [isAILoading, setIsAILoading] = useState(false);
   const [pendingTrackingStyle, setPendingTrackingStyle] = useState(null);
 
-  // Setup modal shown if no settings saved yet
   const [showSetupModal, setShowSetupModal] = useState(() => {
     const s = load("aeryth_settings", null);
     return !s || (!s.userInfo && !s.aerythTone && !s.routineCriteria);
   });
+
+  /* dropdown & inline-rename UI */
+  const [openMenuId, setOpenMenuId] = useState(null); // chat id whose menu is open
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [editingChatName, setEditingChatName] = useState("");
 
   useEffect(() => {
     setMessages(messagesStore.filter((m) => m.chatId === currentChatId));
@@ -132,9 +126,7 @@ export default function App() {
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 60);
   }, [messages, isAILoading]);
 
-  /* -----------------------------
-     helpers
-     ----------------------------- */
+  /* helpers */
   const pushMessage = (msg) => {
     const withId = { id: crypto.randomUUID(), ...msg };
     setMessagesStore((prev) => [...prev, withId]);
@@ -142,19 +134,17 @@ export default function App() {
 
   const updateChats = (cb) => setChats((prev) => cb(prev));
 
-  /* -----------------------------
-     Chat CRUD & UI actions
-     ----------------------------- */
+  /* chat actions */
   const handleNewChat = () => {
     const id = crypto.randomUUID();
-    const newChat = { id, name: `New Chat ${new Date().toLocaleDateString()}`, createdAt: new Date() };
-    updateChats((prev) => [newChat, ...prev]);
+    const n = { id, name: `New Chat ${new Date().toLocaleDateString()}`, createdAt: new Date() };
+    updateChats((prev) => [n, ...prev]);
     setCurrentChatId(id);
     setCurrentView("explore");
   };
 
   const handleDeleteChat = (id) => {
-    if (!confirm("Delete chat and linked routines?")) return;
+    // immediate delete (no dialog per user request)
     setChats((prev) => prev.filter((c) => c.id !== id));
     setMessagesStore((prev) => prev.filter((m) => m.chatId !== id));
     setRoutines((prev) => prev.filter((r) => r.chatId !== id));
@@ -163,24 +153,27 @@ export default function App() {
     if (currentChatId === id) setCurrentChatId(chats[0]?.id ?? null);
   };
 
-  const handleRenameChat = (id) => {
-    const current = chats.find((c) => c.id === id);
-    const name = prompt("Rename chat", current?.name || "");
-    if (name && name.trim()) {
-      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, name: name.trim() } : c)));
-    }
+  const openRename = (id) => {
+    const c = chats.find((x) => x.id === id);
+    setEditingChatId(id);
+    setEditingChatName(c?.name || "");
+    setOpenMenuId(null);
+  };
+  const applyRename = (id) => {
+    const name = editingChatName.trim();
+    if (name) setChats((prev) => prev.map((c) => (c.id === id ? { ...c, name } : c)));
+    setEditingChatId(null);
+    setEditingChatName("");
   };
 
-  /* -----------------------------
-     AI chat send
-     ----------------------------- */
+  /* AI send */
   const handleSendMessage = async (text) => {
     if (!text?.trim() || isAILoading || !currentChatId) return;
     const userMsg = { sender: "user", text: text.trim(), timestamp: new Date(), chatId: currentChatId };
     pushMessage(userMsg);
 
     const upper = text.trim().toUpperCase();
-    if (upper === "EVIDENCE" || upper === "REMINDER") {
+    if (upper === "EVIDENCE" || upper === "REMINDER") { //later change the wording
       setPendingTrackingStyle(upper.toLowerCase());
       pushMessage({
         sender: "aeryth",
@@ -206,48 +199,32 @@ export default function App() {
       const chatHistory = [...messagesStore.filter((m) => m.chatId === currentChatId), userMsg];
       const aiText = await callGemini(currentChatId, chatHistory, settings, routines);
       pushMessage({ sender: "aeryth", text: aiText || "No response.", timestamp: new Date(), chatId: currentChatId });
-    } catch (e) {
-      console.error(e);
+    } catch {
       pushMessage({ sender: "system", text: "Aeryth encountered an AI error.", timestamp: new Date(), chatId: currentChatId });
     } finally {
       setIsAILoading(false);
     }
   };
 
-  /* -----------------------------
-     Diary functions
-     ----------------------------- */
+  /* diary */
   const handleDiaryApi = async (task, entryText) => {
     if (!entryText?.trim()) return null;
-    if (!ensureModelAvailable()) {
-      alert("Gemini Nano not available.");
-      return null;
-    }
+    if (!ensureModelAvailable()) return null;
     try {
       return await callGeminiDiary(entryText, task);
-    } catch (e) {
-      console.error(e);
+    } catch {
       return null;
     }
   };
-
   const saveDiary = (originalText, finalText, summary) => {
     const doc = { id: crypto.randomUUID(), originalText, finalText, summary, createdAt: new Date() };
     setDiaryEntries((prev) => [doc, ...prev].sort((a, b) => b.createdAt - a.createdAt));
   };
 
-  /* -----------------------------
-     Goal / routine
-     ----------------------------- */
+  /* goal */
   const handleSaveGoal = ({ goal, startTime, endTime, days }) => {
-    if (!goal || !currentChatId) {
-      alert("Please fill out goal and times.");
-      return;
-    }
-    if (!pendingTrackingStyle) {
-      alert("Tell Aeryth in chat: reply EVIDENCE or REMINDER first.");
-      return;
-    }
+    if (!goal || !currentChatId) return;
+    if (!pendingTrackingStyle) return;
     const r = { id: crypto.randomUUID(), goal, startTime, endTime, days, chatId: currentChatId, trackingStyle: pendingTrackingStyle, createdAt: new Date() };
     setRoutines((prev) => [r, ...prev]);
     pushMessage({ sender: "system", type: "goal_set", text: `Goal Set: ${goal}`, timestamp: new Date(), chatId: currentChatId });
@@ -255,32 +232,30 @@ export default function App() {
     setCurrentView("explore");
   };
 
-  /* -----------------------------
-     Derived analytics
-     ----------------------------- */
-  const analytics = {
-    totalChats: chats.length,
-    totalRoutines: routines.length,
-    totalDiary: diaryEntries.length,
-    totalMessages: messagesStore.length,
-  };
-
-  /* -----------------------------
-     Tiny components (polished UI)
-     ----------------------------- */
+  /* small UI components */
   const TopPills = ({ view, setView }) => (
-    <div className="flex items-center space-x-3">
-      {["explore", "setGoal", "diary"].map((v) => (
-        <button
-          key={v}
-          onClick={() => setView(v)}
-          className={`px-4 py-2 rounded-full font-semibold transition ${
-            view === v ? "bg-[#8B5CF6] text-white" : "bg-white text-gray-700 border"
-          }`}
-        >
-          {v === "explore" ? "Explore" : v === "setGoal" ? "Set Goal" : "Diary"}
-        </button>
-      ))}
+    <div className=" flex justify-around mb-3 gap-3">     
+      <button
+        onClick={() => setView("explore")}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "explore" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+        // Explore must show black text when active per request
+      >
+        Explore
+      </button>
+
+      <button
+        onClick={() => setView("setGoal")}
+        className={`flex-1 px-4 py-2 rounded-full text-sm font-semibold transition shadow-md ${view === "setGoal" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+      >
+        Set Goal
+      </button>
+
+      <button
+        onClick={() => setView("diary")}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "diary" ? "bg-violet-500 text-white" : "bg-gray-200 hover:bg-violet-100"}`}
+      >
+        Diary
+      </button>
     </div>
   );
 
@@ -313,14 +288,12 @@ export default function App() {
     );
   };
 
-  /* -----------------------------
-     Panels
-     ----------------------------- */
-
+  /* Panels */
   function SetupModal({ visible, onClose }) {
     const [tone, setTone] = useState(settings?.aerythTone || "Friendly");
     const [about, setAbout] = useState(settings?.userInfo || "");
     const [criteria, setCriteria] = useState(settings?.routineCriteria || "");
+
     useEffect(() => {
       if (!visible) {
         setTone(settings?.aerythTone || "Friendly");
@@ -329,22 +302,10 @@ export default function App() {
       }
     }, [visible]);
 
-    const handleComplete = () => {
-      const newSettings = { aerythTone: tone, userInfo: about, routineCriteria: criteria };
-      setSettings(newSettings);
-      save("aeryth_settings", newSettings);
-      setShowSetupModal(false);
-      onClose?.();
-    };
-    const handleSkip = () => {
-      setShowSetupModal(false);
-      onClose?.();
-    };
-
     if (!visible) return null;
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={handleSkip} />
+        <div className="absolute inset-0 bg-black/30" onClick={onClose} />
         <div className="relative w-full max-w-lg mx-4">
           <div className="bg-white rounded-2xl shadow-2xl border-t-8 border-[#8B5CF6] p-6">
             <h3 className="text-2xl font-extrabold text-[#6D28D9] mb-3 text-center">Aeryth Initial Setup</h3>
@@ -362,17 +323,27 @@ export default function App() {
 
             <label className="block mb-3">
               <div className="text-sm font-medium text-[#6D28D9]">About You</div>
-              <textarea rows={3} value={about} onChange={(e) => setAbout(e.target.value)} className="mt-2 w-full p-3 border rounded-lg bg-[#FAF5FF] focus:ring-2 focus:ring-[#C4B5FD]" placeholder="I work best under pressure..." />
+              <textarea rows={3} value={about} onChange={(e) => setAbout(e.target.value)} className="mt-2 w-full p-3 border rounded-lg bg-[#FAF5FF]" placeholder="I work best under pressure..." />
             </label>
 
             <label className="block mb-4">
               <div className="text-sm font-medium text-[#6D28D9]">Routine criteria</div>
-              <input value={criteria} onChange={(e) => setCriteria(e.target.value)} className="mt-2 w-full p-3 border rounded-lg bg-[#FAF5FF] focus:ring-2 focus:ring-[#C4B5FD]" placeholder="e.g., Don't message after 10 PM." />
+              <input value={criteria} onChange={(e) => setCriteria(e.target.value)} className="mt-2 w-full p-3 border rounded-lg bg-[#FAF5FF]" placeholder="e.g., Don't message after 10 PM." />
             </label>
 
             <div className="flex gap-3 mt-4">
-              <button onClick={handleSkip} className="flex-1 py-3 rounded-lg border text-gray-700 bg-white">Skip</button>
-              <button onClick={handleComplete} className="flex-1 py-3 rounded-lg bg-[#8B5CF6] text-white font-bold hover:bg-[#7C3AED]">Complete Setup</button>
+              <button onClick={onClose} className="flex-1 py-3 rounded-lg border text-gray-700 bg-white">Skip</button>
+              <button
+                onClick={() => {
+                  const newSettings = { aerythTone: tone, userInfo: about, routineCriteria: criteria };
+                  setSettings(newSettings);
+                  save("aeryth_settings", newSettings);
+                  onClose();
+                }}
+                className="flex-1 py-3 rounded-lg bg-[#8B5CF6] text-white font-bold hover:bg-[#7C3AED]"
+              >
+                Complete Setup
+              </button>
             </div>
           </div>
         </div>
@@ -380,17 +351,16 @@ export default function App() {
     );
   }
 
-  function SetGoalCard({ onSave, onCancel }) {
+  function SetGoalPanel({ onSave, onClose }) {
     const [goal, setGoal] = useState("");
     const [startTime, setStartTime] = useState("09:00");
     const [endTime, setEndTime] = useState("10:00");
     const [days, setDays] = useState([]);
     const availableDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const toggleDay = (d) => setDays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
-    const saveGoal = () => onSave({ goal: goal.trim(), startTime, endTime, days });
     return (
       <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-        <div className="absolute inset-0 bg-black/20" onClick={onCancel} />
+        <div className="absolute inset-0 bg-black/20" onClick={onClose} />
         <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-lg p-6 border-t-4 border-[#8B5CF6]">
           <h3 className="text-xl font-bold text-[#6D28D9] mb-3">Set a New Routine</h3>
 
@@ -415,7 +385,13 @@ export default function App() {
               <label className="text-sm font-medium">Repeat on</label>
               <div className="flex gap-2 mt-2">
                 {availableDays.map((d) => (
-                  <button key={d} type="button" onClick={() => toggleDay(d)} className={`w-10 h-10 rounded-full font-bold ${days.includes(d) ? "bg-[#8B5CF6] text-white" : "bg-gray-200 text-gray-700"}`}>
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => toggleDay(d)}
+                    className={`w-10 h-10 rounded-full font-bold transition ${days.includes(d) ? "bg-[#8B5CF6] text-white" : "bg-gray-200 text-gray-700"}`}
+                    title={d}
+                  >
                     {d[0]}
                   </button>
                 ))}
@@ -424,80 +400,10 @@ export default function App() {
           </div>
 
           <div className="flex gap-3 mt-6">
-            <button onClick={onCancel} className="flex-1 py-3 rounded-lg border">Cancel</button>
-            <button onClick={saveGoal} className="flex-1 py-3 rounded-lg bg-[#8B5CF6] text-white font-bold">Set Goal</button>
+            <button onClick={onClose} className="flex-1 py-3 rounded-lg border">Cancel</button>
+            <button onClick={() => { onSave({ goal: goal.trim(), startTime, endTime, days }); }} className="flex-1 py-3 rounded-lg bg-[#8B5CF6] text-white font-bold">Set Goal</button>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  /* -----------------------------
-     Sub-views: Main (Chat), Diary, Settings
-     ----------------------------- */
-
-  function MainPanel() {
-    const [input, setInput] = useState("");
-    const [showGoalCard, setShowGoalCard] = useState(false);
-
-    const submit = (e) => {
-      e.preventDefault();
-      if (!input.trim()) return;
-      handleSendMessage(input);
-      setInput("");
-    };
-
-    return (
-      <div className="flex-1 h-full flex flex-col p-6 overflow-hidden">
-        <div className="flex items-center justify-between mb-4">
-          <TopPills view={currentView} setView={setCurrentView} />
-          <div className="text-sm italic text-gray-500">Tone: <span className="font-semibold text-[#6D28D9]">{settings?.aerythTone || "Friendly"}</span></div>
-        </div>
-
-        {currentView === "explore" && (
-          <>
-            <div className="flex-1 overflow-y-auto space-y-4 pb-4">
-              {messages.length === 0 && (
-                <div className="text-center text-gray-500 mt-8">Say hi to Aeryth. Try typing "study" or "set reminder".</div>
-              )}
-              {messages.map((m) => <ChatBubble key={m.id} m={m} />)}
-              {isAILoading && (
-                <div className="flex"><div className="bg-white p-3 rounded-xl shadow inline-flex items-center gap-2"><svg className="animate-spin h-5 w-5 text-[#8B5CF6]" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" /></svg><span>Aeryth is thinking...</span></div></div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            <form onSubmit={submit} className="pt-4 bg-white border-t p-4 rounded-xl">
-              <div className="flex gap-3">
-                <input value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} placeholder={isAILoading ? "Aeryth is thinking..." : "Start exploring a new task..."} className="flex-1 p-3 rounded-xl border focus:ring-2 focus:ring-[#C4B5FD]" />
-                <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold ${isAILoading || !input.trim() ? "bg-gray-300 text-white" : "bg-[#8B5CF6] text-white hover:bg-[#7C3AED]"}`}>{isAILoading ? "..." : "Send"}</button>
-              </div>
-            </form>
-          </>
-        )}
-
-        {currentView === "setGoal" && (
-          <>
-            <div className="flex-1 flex items-center justify-center">
-              <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-2xl border-t-4 border-[#8B5CF6]">
-                <h3 className="text-xl font-bold text-[#6D28D9] mb-2">Set a New Routine</h3>
-                <p className="text-sm text-gray-600 mb-4">Link a goal to the current chat conversation.</p>
-                <div className="flex justify-end">
-                  <button onClick={() => setShowGoalCard(true)} className="py-2 px-4 bg-[#8B5CF6] text-white rounded-lg">Open Goal Card</button>
-                </div>
-              </div>
-            </div>
-            {showGoalCard && <SetGoalCard onSave={(g) => { handleSaveGoal(g); setShowGoalCard(false); }} onCancel={() => setShowGoalCard(false)} />}
-          </>
-        )}
-
-        {currentView === "diary" && <DiaryPanel />}
-
-        {currentView === "calendar" && (
-          <div className="flex-1 flex items-center justify-center text-gray-500">Calendar placeholder — coming later.</div>
-        )}
-
-        {currentView === "settings" && <SettingsPanel initial={settings} onSave={(s) => { handleSaveSettings(s); save("aeryth_settings", s); }} />}
       </div>
     );
   }
@@ -518,7 +424,7 @@ export default function App() {
     }, [selected]);
 
     const callTask = async (task) => {
-      if (!entry.trim()) { alert("Write something first"); return; }
+      if (!entry.trim()) return;
       setProcessing(true);
       try {
         const out = await handleDiaryApi(task, entry);
@@ -529,12 +435,11 @@ export default function App() {
       }
     };
 
-    const saveEntry = () => {
+    const saveEntryLocal = () => {
       const final = corrected || entry;
-      if (!final.trim()) return alert("Cannot save empty.");
+      if (!final.trim()) return;
       saveDiary(entry, final, summary || "No summary.");
       setEntry(""); setSummary(""); setCorrected("");
-      alert("Saved.");
     };
 
     return (
@@ -546,7 +451,7 @@ export default function App() {
           </div>
           <div className="space-y-2">
             {diaryEntries.map((d) => (
-              <div key={d.id} onClick={() => setSelected(d)} className={`p-3 rounded-md cursor-pointer ${selected?.id === d.id ? "bg-[#F3E8FF] border-[#E9D5FF]" : "bg-gray-50"}`}>
+              <div key={d.id} onClick={() => setSelected(d)} className={`p-3 rounded-md cursor-pointer ${selected?.id === d.id ? "bg-[#F3E8FF]" : "bg-gray-50"}`}>
                 <p className="truncate text-sm font-medium">{d.finalText}</p>
                 <p className="text-xs text-gray-500">{new Date(d.createdAt).toLocaleDateString()}</p>
               </div>
@@ -564,7 +469,7 @@ export default function App() {
             <div className="flex gap-3 mt-4">
               <button onClick={() => callTask("correct_grammar")} disabled={processing} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{processing ? "..." : "Correct Grammar"}</button>
               <button onClick={() => callTask("summarize")} disabled={processing} className="flex-1 py-2 rounded-lg bg-indigo-100 text-indigo-800 font-semibold">{processing ? "..." : "Summarize"}</button>
-              <button onClick={saveEntry} disabled={processing} className="flex-1 py-2 rounded-lg bg-[#8B5CF6] text-white font-bold">Save Entry</button>
+              <button onClick={saveEntryLocal} disabled={processing} className="flex-1 py-2 rounded-lg bg-[#8B5CF6] text-white font-bold">Save Entry</button>
             </div>
           )}
 
@@ -590,6 +495,7 @@ export default function App() {
   function SettingsPanel({ initial, onSave }) {
     const [form, setForm] = useState(initial);
     const setField = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+    useEffect(() => setForm(initial), [initial]);
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="w-full max-w-2xl bg-white p-6 rounded-2xl shadow border-t-4 border-[#8B5CF6]">
@@ -617,7 +523,7 @@ export default function App() {
           </div>
 
           <div className="flex gap-3 mt-6">
-            <button onClick={() => { onSave(form); }} className="bg-[#8B5CF6] text-white py-2 px-4 rounded font-bold">Save</button>
+            <button onClick={() => { onSave(form); save("aeryth_settings", form); }} className="bg-[#8B5CF6] text-white py-2 px-4 rounded font-bold">Save</button>
             <button onClick={() => setForm(initial)} className="py-2 px-4 rounded border">Reset</button>
           </div>
         </div>
@@ -625,19 +531,19 @@ export default function App() {
     );
   }
 
-  /* -----------------------------
-     Right Sidebar
-     ----------------------------- */
+  /* Sidebar (right) */
   function Sidebar() {
     const now = new Date();
     const eight = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-    const upcoming = routines.filter((r) => {
-      if (!r.startTime) return false;
-      const [hh, mm] = r.startTime.split(":").map(Number);
-      const t = new Date();
-      t.setHours(hh, mm, 0, 0);
-      return t >= now && t <= eight;
-    }).slice(0, 3);
+    const upcoming = routines
+      .filter((r) => {
+        if (!r.startTime) return false;
+        const [hh, mm] = r.startTime.split(":").map(Number);
+        const t = new Date();
+        t.setHours(hh, mm, 0, 0);
+        return t >= now && t <= eight;
+      })
+      .slice(0, 3);
 
     return (
       <div className="w-80 h-full p-4 flex flex-col bg-white border-l shadow-inner">
@@ -669,16 +575,31 @@ export default function App() {
             <h4 className="text-sm font-semibold text-gray-800 mt-4">Chats</h4>
             <div className="space-y-2 mt-2">
               {chats.map((c) => (
-                <div key={c.id} className={`flex items-center p-3 rounded-xl ${c.id === currentChatId ? "bg-[#F3E8FF]" : "hover:bg-gray-100"}`}>
-                  <button onClick={() => setCurrentChatId(c.id)} className="flex-1 text-left font-medium truncate">{c.name}</button>
-                  <div className="relative">
-                    <button className="p-1 text-gray-400 hover:text-gray-700" onClick={() => {
-                      // open small menu via prompt choices (simpler than full menu UI)
-                      const action = prompt("Enter: rename or delete", "");
-                      if (!action) return;
-                      if (action.toLowerCase() === "rename") handleRenameChat(c.id);
-                      if (action.toLowerCase() === "delete") handleDeleteChat(c.id);
-                    }}>⋯</button>
+                <div key={c.id} className={`relative flex items-center p-3 rounded-xl ${c.id === currentChatId ? "bg-[#F3E8FF]" : "hover:bg-gray-100"}`}>
+                  <div className="flex-1">
+                    {editingChatId === c.id ? (
+                      <input
+                        value={editingChatName}
+                        onChange={(e) => setEditingChatName(e.target.value)}
+                        onBlur={() => applyRename(c.id)}
+                        onKeyDown={(e) => e.key === "Enter" && applyRename(c.id)}
+                        autoFocus
+                        className="w-full p-1 border-b"
+                      />
+                    ) : (
+                      <button onClick={() => setCurrentChatId(c.id)} className="text-left font-medium truncate">{c.name}</button>
+                    )}
+                  </div>
+
+                  <div className="ml-2">
+                    <button onClick={() => setOpenMenuId((p) => (p === c.id ? null : c.id))} className="p-1 text-gray-500 hover:text-gray-800">⋯</button>
+
+                    {openMenuId === c.id && (
+                      <div className="absolute right-3 top-10 z-20 bg-white border rounded shadow px-2 py-1 w-28">
+                        <button onClick={() => openRename(c.id)} className="w-full text-left py-1 px-2 text-sm hover:bg-gray-100">Rename</button>
+                        <button onClick={() => { handleDeleteChat(c.id); setOpenMenuId(null); }} className="w-full text-left py-1 px-2 text-sm text-red-600 hover:bg-gray-100">Delete</button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -695,34 +616,93 @@ export default function App() {
     );
   }
 
-  /* -----------------------------
-     Layout
-     ----------------------------- */
+  /* MainPanel (resizes based on sidebar) */
+  function MainPanel() {
+    const [input, setInput] = useState("");
+    const [goalPanelOpen, setGoalPanelOpen] = useState(false);
 
+    const submit = (e) => {
+      e.preventDefault();
+      if (!input.trim()) return;
+      handleSendMessage(input);
+      setInput("");
+    };
+
+    // width calc: sidebar 320px (w-80). main = calc(100% - 320px) when sidebar open, else 100%
+    const mainStyle = { width: isSidebarOpen ? "calc(100% - 320px)" : "100%" };
+
+    return (
+      <div style={mainStyle} className="transition-all duration-300 flex-1 min-h-screen">
+        <div className="p-6 h-full flex flex-col">
+          <div className="flex-1 flex flex-col mb-4">
+            <div className="flex-1 overflow-auto bg-transparent pb-4">
+              {currentView === "explore" && (
+                <>
+                  <div className="flex-1 overflow-y-auto space-y-4">
+                    <div className="text-center text-gray-500 italic mb-4">Aeryth's Tone: <span className="font-semibold text-[#6D28D9]">{settings?.aerythTone || "Friendly"}</span></div>
+                    {messages.map((m) => <ChatBubble key={m.id} m={m} />)}
+                    {isAILoading && <div className="flex"><div className="bg-white p-3 rounded-xl shadow inline-flex items-center gap-2"><svg className="animate-spin h-5 w-5 text-[#8B5CF6]" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" /></svg><span>Aeryth is thinking...</span></div></div>}
+                    <div ref={chatEndRef} />
+                  </div>
+                </>
+              )}
+
+              {currentView === "setGoal" && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-2xl border-t-4 border-[#8B5CF6]">
+                    <h3 className="text-xl font-bold text-[#6D28D9] mb-2">Set a New Routine</h3>
+                    <p className="text-sm text-gray-600 mb-4">Link a goal to the current chat conversation.</p>
+                    <div className="flex justify-end">
+                      <button onClick={() => setGoalPanelOpen(true)} className="py-2 px-4 bg-[#8B5CF6] text-white rounded-lg">Open</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {currentView === "diary" && <DiaryPanel />}
+
+              {currentView === "calendar" && <div className="flex-1 flex items-center justify-center text-gray-500">Calendar placeholder — coming later.</div>}
+
+              {currentView === "settings" && <SettingsPanel initial={settings} onSave={(s) => { setSettings(s); save("aeryth_settings", s); }} />}
+            </div>
+
+            {/* buttons right above chat input */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <TopPills view={currentView} setView={setCurrentView} />
+                </div>
+                <div className="text-sm italic text-gray-500 hidden"> /* space for extras */ </div>
+              </div>
+
+              <form onSubmit={submit} className="bg-white p-4 rounded-xl border-t flex gap-3 items-center">
+                <input value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} placeholder={isAILoading ? "Aeryth is thinking..." : "Start exploring a new task..."} className="flex-1 p-3 rounded-xl border focus:ring-2 focus:ring-[#C4B5FD]" />
+                <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold ${isAILoading || !input.trim() ? "bg-gray-300 text-white" : "bg-[#8B5CF6] text-white hover:bg-[#7C3AED]"}`}>{isAILoading ? "..." : "Send"}</button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        {goalPanelOpen && <SetGoalPanel onSave={(g) => { handleSaveGoal(g); setGoalPanelOpen(false); }} onClose={() => setGoalPanelOpen(false)} />}
+      </div>
+    );
+  }
+
+  /* root layout */
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-[#EDE9FE] to-[#FAE8FF] font-sans text-gray-800">
-      {/* Main area */}
-      <div className="flex-1 min-w-0">
-        <MainPanel />
-      </div>
-
-      {/* Right sidebar */}
+      <MainPanel />
       <div className={`transition-all duration-300 ${isSidebarOpen ? "w-80" : "w-0"} flex-shrink-0 overflow-hidden`}>
-        <div className="w-80 h-full">
-          <Sidebar />
-        </div>
+        <Sidebar />
       </div>
 
-      {/* Sidebar open button when collapsed */}
-      {!isSidebarOpen && (
-        <div className="fixed right-6 top-6 z-50">
-          <button onClick={() => setIsSidebarOpen(true)} className="p-3 rounded-full bg-[#8B5CF6] text-white shadow-lg">
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
-          </button>
-        </div>
-      )}
+      {/* persistent floating toggle button (always visible) */}
+      <div className="fixed right-4 top-1/2 transform -translate-y-1/2 z-50">
+        <button onClick={() => setIsSidebarOpen((p) => !p)} className="p-3 rounded-full bg-[#8B5CF6] text-white shadow-lg">
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
 
-      {/* Initial setup modal */}
       <SetupModal visible={showSetupModal} onClose={() => setShowSetupModal(false)} />
     </div>
   );
