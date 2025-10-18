@@ -78,3 +78,6 @@ user can hover over the entry to delete the entry of required befor ethe day end
 
 Notes for me:
 for the user initial persona;lity foind the four type of tutors that user requires and get the prompt that can be used for them.
+
+
+Change the diary hierarchy, new chat to create new explore, date is one day ahead bacuse of utc and singapore timing can be solved by shnaging iso

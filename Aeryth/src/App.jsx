@@ -177,8 +177,8 @@ export default function App() {
     routines.forEach(r => {
       if (!r.days || !r.startTime) return;
       Object.keys(events).forEach(dayIso => {
-        const d = new Date(dayIso + "T00:00:00");
-        const wd = d.getDay();
+        const d = new Date(dayIso + "T00:00:00Z");
+        const wd = d.getUTCDay();
         if (r.days.some(dd => daysMap[dd] === wd)) {
           events[dayIso].push({ routineId: r.id, name: r.name || r.goal || "Routine", color: r.color || "violet", time: r.startTime });
         }
@@ -414,8 +414,8 @@ export default function App() {
     routines.forEach((r) => {
       if (!r.days || !r.startTime) return;
       Object.keys(events).forEach((dayIso) => {
-        const d = new Date(dayIso + "T00:00:00");
-        if (r.days.some((dd) => daysMap[dd] === d.getDay())) {
+        const d = new Date(dayIso + "T00:00:00Z");
+        if (r.days.some((dd) => daysMap[dd] === d.getUTCDay())) {
           events[dayIso].push({
             routineId: r.id,
             name: r.name || "Routine",
@@ -900,7 +900,7 @@ export default function App() {
               .map(r => {
                 const daysMap = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:0 };
                 const d = new Date();
-                const wd = d.getDay();
+                const wd = d.getUTCDay();
                 if (r.days.some(dd => daysMap[dd] === wd)) return r;
                 return null;
               })
