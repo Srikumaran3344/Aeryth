@@ -102,6 +102,18 @@ export default function App() {
     return id;
   };
   const updateRoutine = (id, patch) => setRoutines(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+  const updateCalendar = (routineId, updates) => {
+  setCalendarEvents((prev) => {
+    const newEvents = { ...prev };
+    for (const date in newEvents) {
+      newEvents[date] = newEvents[date].map((ev) =>
+        ev.routineId === routineId ? { ...ev, ...updates } : ev
+      );
+    }
+    localStorage.setItem("calendarEvents", JSON.stringify(newEvents));
+    return newEvents;
+  });
+};
   const removeRoutine = (id) => {
     setRoutines(prev => prev.filter(r => r.id !== id));
     setStickies(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -458,62 +470,113 @@ export default function App() {
                     />
                 </div>
 
-                {/* Events List Section */}
+                {/* Events Section */}
                 <div className="mt-8 bg-white p-4 rounded-xl shadow">
-                    <h3 className="font-semibold text-lg text-gray-800">Events on {fmtShort(new Date(calendarDate))}</h3>
+                    <h3 className="font-semibold text-lg text-gray-800">
+                        Events on {fmtShort(new Date(calendarDate))}
+                    </h3>
                     <div className="mt-3 space-y-3">
-                        {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => (
-                            // Assuming ev object now includes 'days' property (e.g., ev.days = ['Mon', 'Wed'])
-                            <div key={idx} className="p-3 border border-gray-100 rounded-lg shadow-sm">
-                                <div className="font-medium text-lg mb-2">{ev.name}</div>
-                                
-                                <div className="flex flex-wrap items-center gap-4">
-                                    
-                                    {/* 1. Days Selector (New Feature) */}
-                                    <div>
-                                        <label className="text-sm font-medium text-gray-600 block mb-1">Repeat on</label>
-                                        <div className="flex gap-1">
-                                            {availableDays.map(d => (
-                                                <button 
-                                                    key={d} 
-                                                    type="button" 
-                                                    onClick={() => toggleDay(ev.routineId, ev.days || [], d)} // Pass routineId and current days
-                                                    className={`w-8 h-8 rounded-full text-xs font-bold transition flex items-center justify-center 
-                                                                ${(ev.days || []).includes(d) 
-                                                                    ? "bg-violet-500 text-white shadow" 
-                                                                    : "bg-violet-100 text-violet-500 hover:bg-violet-200"}`}
-                                                >
-                                                    {d[0]}
-                                                </button>
-                                            ))}
-                                        </div>
+                        {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => {
+                            const [tempDays, setTempDays] = React.useState(ev.days || []);
+                            const [tempTime, setTempTime] = React.useState(ev.time || "");
+                            const [isChanged, setIsChanged] = React.useState(false);
+
+                            const toggleDayLocal = (day) => {
+                                const newDays = tempDays.includes(day)
+                                    ? tempDays.filter((d) => d !== day)
+                                    : [...tempDays, day];
+                                setTempDays(newDays);
+                                setIsChanged(true);
+                            };
+
+                            const saveChanges = () => {
+                                updateRoutine(ev.routineId, { days: tempDays, time: tempTime });
+                                setIsChanged(false);
+                            };
+
+                            return (
+                                <div
+                                    key={idx}
+                                    className="p-3 border border-gray-100 rounded-lg shadow-sm flex flex-col gap-3"
+                                >
+                                    <div className="flex justify-between items-center">
+                                        <div className="font-medium text-lg">{ev.name}</div>
+                                        {isChanged && (
+                                            <button
+                                                onClick={saveChanges}
+                                                className="px-3 py-1 bg-violet-500 text-white text-sm font-semibold rounded hover:bg-violet-600 transition"
+                                            >
+                                                Save
+                                            </button>
+                                        )}
                                     </div>
 
-                                    {/* 2. Time Input */}
-                                    <div>
-                                        <label className="text-sm font-medium text-gray-600 block mb-1">Time</label>
-                                        <input 
-                                            type="time" 
-                                            value={ev.time} 
-                                            onChange={(e)=> updateRoutine(ev.routineId, { time: e.target.value })} 
-                                            className="p-1 border rounded-lg text-sm" 
-                                        />
-                                    </div>
-                                    
-                                    {/* 3. Color Picker */}
-                                    <div>
-                                        <label className="text-sm font-medium text-gray-600 block mb-1">Color</label>
-                                        <div className="flex gap-1">
-                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "violet" })} className="w-5 h-5 rounded-full bg-violet-500 border-2 border-transparent hover:border-violet-700 transition" />
-                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "green" })} className="w-5 h-5 rounded-full bg-green-400 border-2 border-transparent hover:border-green-600 transition" />
-                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "rose" })} className="w-5 h-5 rounded-full bg-rose-400 border-2 border-transparent hover:border-rose-600 transition" />
-                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "amber" })} className="w-5 h-5 rounded-full bg-amber-400 border-2 border-transparent hover:border-amber-600 transition" />
+                                    <div className="flex flex-wrap items-center gap-4">
+                                        {/* Days Selector */}
+                                        <div>
+                                            <label className="text-sm font-medium text-gray-600 block mb-1">
+                                                Repeat on
+                                            </label>
+                                            <div className="flex gap-1">
+                                                {availableDays.map((d) => (
+                                                    <button
+                                                        key={d}
+                                                        type="button"
+                                                        onClick={() => toggleDayLocal(d)}
+                                                        className={`w-8 h-8 rounded-full text-xs font-bold transition flex items-center justify-center ${
+                                                            tempDays.includes(d)
+                                                                ? "bg-violet-500 text-white shadow"
+                                                                : "bg-violet-100 text-violet-500 hover:bg-violet-200"
+                                                        }`}
+                                                    >
+                                                        {d[0]}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Time Input */}
+                                        <div>
+                                            <label className="text-sm font-medium text-gray-600 block mb-1">Time</label>
+                                            <input
+                                                type="time"
+                                                value={tempTime}
+                                                onChange={(e) => {
+                                                    setTempTime(e.target.value);
+                                                    setIsChanged(true);
+                                                }}
+                                                className="p-1 border rounded-lg text-sm"
+                                            />
+                                        </div>
+
+                                        {/* Color Picker */}
+                                        <div>
+                                            <label className="text-sm font-medium text-gray-600 block mb-1">Color</label>
+                                            <div className="flex gap-1">
+                                                {["violet", "green", "rose", "amber"].map((c) => (
+                                                    <button
+                                                        key={c}
+                                                        onClick={() => updateRoutine(ev.routineId, { color: c })}
+                                                        className={`w-5 h-5 rounded-full border-2 border-transparent hover:border-violet-700 transition ${
+                                                            c === "violet"
+                                                                ? "bg-violet-500"
+                                                                : c === "green"
+                                                                ? "bg-green-400"
+                                                                : c === "rose"
+                                                                ? "bg-rose-400"
+                                                                : "bg-amber-400"
+                                                        }`}
+                                                    />
+                                                ))}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                        ))}
-                        {!(calendarEvents[iso(calendarDate)] || []).length && <div className="text-sm text-gray-500 p-2">No routines scheduled for this day.</div>}
+                            );
+                        })}
+                        {!(calendarEvents[iso(calendarDate)] || []).length && (
+                            <div className="text-sm text-gray-500 p-2">No routines scheduled for this day.</div>
+                        )}
                     </div>
                 </div>
             </div>
