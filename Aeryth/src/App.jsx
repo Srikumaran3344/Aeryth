@@ -613,7 +613,7 @@ export default function App() {
   function Sidebar() {
     return (
       <div className="w-80 h-full p-4 flex flex-col bg-white border-l">
-        <div className="flex items-center justify-between mb-4 pt-4">
+        <div className="flex items-center justify-between mb-4 pt-1">
           <div>
             <h3 className="text-2xl font-extrabold text-violet-600">Routines</h3>
             <p className="text-sm text-gray-500">Your daily rhythm</p>
@@ -623,21 +623,54 @@ export default function App() {
             <SidebarToggle inside />
           </div>
         </div>
+        <button onClick={() => setCurrentView("explore")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
+        <button onClick={() => setCurrentView("setGoal")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>
 
-        <button onClick={() => setCurrentView("setGoal")} className="w-full mb-3 py-3 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>
+        <input placeholder="Search routines..." className="w-full p-2 border rounded-xl mb-3" />
 
-        <input placeholder="Search routines..." className="w-full p-3 border rounded-xl mb-3" />
+        <div className="mb-4 flex flex-col gap-2">
 
+          {routines.length > 0 && (() => {
+            // Find next upcoming routine
+            const todayIso = iso(new Date());
+            const upcoming = routines
+              .map(r => {
+                const daysMap = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:0 };
+                const d = new Date();
+                const wd = d.getDay();
+                if (r.days.some(dd => daysMap[dd] === wd)) return r;
+                return null;
+              })
+              .filter(Boolean);
+            if (!upcoming.length) return null;
+            
+              return <div>
+                <h4 className="text-sm font-semibold text-gray-800">Upcoming...</h4>
+                <div className="mt-1 space-y-2">
+                  {upcoming.length ? upcoming.slice(0,1).map(r => (
+                    <div key={r.id} className="p-2 bg-violet-50 rounded-xl border-l-2 border-violet-400">
+                      <div className="font-bold text-violet-800 truncate">{r.name}</div>
+                      <div className="text-xs text-violet-600 mt-1">{r.startTime} - {r.endTime}</div>
+                    </div>
+                  )) : <p className="text-sm text-gray-500 italic mt-2">No routines</p>}
+                </div>
+              </div>
+
+
+          })()}
+        </div>
+        <h4 className="text-sm font-bold text-gray-800 w-full ">Routines:</h4>
         <div className="flex-1 overflow-auto space-y-3">
+          
           <div>
-            <h4 className="text-sm font-semibold text-gray-800">Sticky quick view</h4>
-            <div className="mt-2 space-y-2">
+            
+            <div className="mt-2 space-y-2 w-full">
               {routines.length ? routines.map(r => <RoutineStrip key={r.id} r={r} />) : <div className="text-sm text-gray-500">No routines yet</div>}
             </div>
           </div>
         </div>
 
-        <div className="pt-4 border-t mt-4 space-y-2">
+        <div className="pt-2 border-t mt-3 space-y-1">
           <button onClick={() => setCurrentView("calendar")} className={`flex items-center w-full p-3 rounded-xl ${currentView === "calendar" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">🗓️</span>Calendar</button>
           <button onClick={() => setCurrentView("diary")} className={`flex items-center w-full p-3 rounded-xl ${currentView === "diary" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">✍️</span>Diary</button>
           <button onClick={() => setCurrentView("settings")} className={`flex items-center w-full p-3 rounded-xl ${currentView === "settings" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">⚙️</span>Settings</button>

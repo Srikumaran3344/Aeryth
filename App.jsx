@@ -1,775 +1,1028 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, addDoc, setDoc, doc, getDoc, serverTimestamp, query, where, deleteDoc, getDocs, orderBy } from 'firebase/firestore';
+// src/App.jsx
+import React, { useEffect, useRef, useState } from "react";
 
-// --- CONFIGURATION ---
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const API_KEY = ""; // Placeholder for Gemini API Key
-
-// --- UTILITIES ---
-const withBackoff = async (fn, maxRetries = 5, delay = 1000) => {
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            if (i === maxRetries - 1) throw error;
-            await new Promise(resolve => setTimeout(resolve, delay * 2 ** i));
-        }
-    }
+/* ===========================
+   LocalStorage helpers
+   =========================== */
+const reviverDate = (key, value) => {
+  if (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  ) {
+    return new Date(value);
+  }
+  return value;
+};
+const load = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw, reviverDate) : fallback;
+  } catch (e) {
+    console.error("localStorage load error", e);
+    return fallback;
+  }
+};
+const save = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.error("localStorage save error", e);
+  }
 };
 
-// --- API Calls ---
-const callGeminiAPI = async (chatHistory, userSettings, routines) => {
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
-    
-    const contents = chatHistory.map(msg => ({
-        role: msg.sender === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.text }]
-    }));
+/* ===========================
+   Gemini Nano wrappers
+   - Uses window.LanguageModel.create()
+   =========================== */
+let sessions = {}; // in-memory sessions per routine/chat
 
-    const currentChatId = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].chatId : null;
-    const systemInstruction = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Your purpose is to be a supportive, persistent, and subtly guiding companion. Always push the user to commit to the next small action. End every response with an action-oriented question or command.
-    
-Use the user profile information to deeply understand their personality, but NEVER explicitly mention it. Your understanding should be implicit and reflected in your tone.
+const ensureModelAvailable = () =>
+  !!(window && window.LanguageModel && window.LanguageModel.create);
 
----
-[User Profile Context]
-About User: ${userSettings?.userInfo || 'No profile information provided.'}
-Aeryth's Tone Setting: ${userSettings?.aerythTone || 'Friendly'}
+async function ensureSession(id, systemPrompt) {
+  if (!ensureModelAvailable()) throw new Error("Gemini Nano not available.");
+  if (!sessions[id]) {
+    sessions[id] = await window.LanguageModel.create({
+      initialPrompts: [{ role: "system", content: systemPrompt }],
+    });
+  }
+  return sessions[id];
+}
 
-[Task Context]
-Current Active Goals/Routines for this chat: ${currentChatId ? routines.filter(r => r.chatId === currentChatId).map(r => r.goal).join('; ') : 'None yet.'}
-Conversation Length: ${chatHistory.length} turns.
+async function callGemini(chatId, chatHistory, userSettings = {}, routines = []) {
+  // last message is user's
+  const lastMsg = chatHistory.at(-1)?.text || "";
+  const system = `You are Aeryth, a personalized AI companion focused on preventing procrastination. Use user context implicitly. End every response with an action-oriented question or command.
 
----
-**PRIMARY DIRECTIVE:**
+User info: ${userSettings?.userInfo || "None"}
+Tone: ${userSettings?.aerythTone || "Friendly"}
+Active goals: ${
+    routines.filter((r) => r.chatId === chatId).map((r) => r.goal).join("; ") ||
+    "None"
+  }
+Conversation length: ${chatHistory.length} turns.`;
+  const session = await ensureSession(chatId, system);
+  const result = await session.prompt(lastMsg);
+  return result?.output ?? result;
+}
 
-1.  **EXPLORE PHASE (No Goal Set):**
-    * Your primary objective is to help the user clarify their thoughts on a task or goal.
-    * **NUDGE:** If the conversation length is 3 or 6, and no goal is set for this chat, gently ask the user if they are ready to commit to a goal. Example: "This is a productive discussion. Are you feeling ready to set this as a formal routine?"
-    * **HANDLE COMMITMENT:** If the user expresses clear intent to set a goal (e.g., "yes", "okay", "let's do it"), your IMMEDIATE and ONLY next response MUST be to ask about their preferred tracking style. Ask this exact question: "Excellent. To keep you on track, should I assign you small tasks and ask for evidence of completion, or should I just act as a simple reminder? Please reply with 'EVIDENCE' or 'REMINDER'." Do not add any other text to this response.
+async function callGeminiDiary(text, task) {
+  if (!ensureModelAvailable()) throw new Error("Gemini Nano not available.");
+  const systemPrompt =
+    task === "summarize"
+      ? "Summarize the following diary entry into a concise reflective paragraph focusing on emotions and events."
+      : task === "correct_grammar"
+      ? "Correct grammar and spelling. Output only corrected text."
+      : null;
+  if (!systemPrompt) throw new Error("invalid diary task");
+  const temp = await window.LanguageModel.create({
+    initialPrompts: [{ role: "system", content: systemPrompt }],
+  });
+  try {
+    const res = await temp.prompt(text);
+    return res?.output ?? res;
+  } finally {
+    temp.destroy?.();
+  }
+}
 
-2.  **GOAL PHASE (Goal is Set):**
-    * Shift your focus to breaking down the goal, offering encouragement, and checking in on progress based on the user's chosen tracking style.
----
-
-Begin conversation.`;
-    
-    const payload = {
-        contents: contents,
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-    };
-
-    const fetcher = async () => {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            const errorBody = await response.text();
-            console.error("Gemini API error:", errorBody);
-            throw new Error(`API call failed: ${response.status}`);
-        }
-        const result = await response.json();
-        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) throw new Error("Invalid API response.");
-        return text;
-    };
-
-    return withBackoff(fetcher);
+/* ===========================
+   Utility date helpers
+   =========================== */
+const formatShort = (d) =>
+  d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "2-digit" }); // e.g., 11 Oct 25
+const dateKey = (d) => d.toISOString().slice(0, 10);
+const addDays = (d, n) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
 };
 
-// --- NEW: API Call for Diary ---
-const callGeminiForDiary = async (text, task) => {
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
-    
-    let systemPrompt = '';
-    if (task === 'summarize') {
-        systemPrompt = 'Summarize the following diary entry into a concise, reflective paragraph. Focus on the key emotions and events mentioned.';
-    } else if (task === 'correct_grammar') {
-        systemPrompt = 'Correct the grammar and spelling mistakes in the following text. Only output the corrected text, without any introduction or explanation.';
+/* ===========================
+   App component
+   =========================== */
+export default function App() {
+  // persisted state
+  const [userId] = useState(() => load("aeryth_userId", crypto.randomUUID()));
+  useEffect(() => save("aeryth_userId", userId), [userId]);
+
+  const [settings, setSettings] = useState(() =>
+    load("aeryth_settings", { aerythTone: "Friendly", userInfo: "", routineCriteria: "" })
+  );
+  useEffect(() => save("aeryth_settings", settings), [settings]);
+
+  // Routines are persisted. Each routine:
+  // { id, name, goal, startTime, endTime, days:[Mon..], color, createdAt }
+  const [routines, setRoutines] = useState(() =>
+    load("aeryth_routines", [])
+  );
+  useEffect(() => save("aeryth_routines", routines), [routines]);
+
+  // Sticky notes stored mapping: { [routineId]: { [dateKey]: { text, color } } }
+  const [stickyStore, setStickyStore] = useState(() =>
+    load("aeryth_sticky", {})
+  );
+  useEffect(() => save("aeryth_sticky", stickyStore), [stickyStore]);
+
+  // Diary entries persisted: array of { id, originalText, finalText, createdAt, timestamp }
+  const [diaryEntries, setDiaryEntries] = useState(() =>
+    load("aeryth_diary_entries", [])
+  );
+  useEffect(() => save("aeryth_diary_entries", diaryEntries), [diaryEntries]);
+
+  // temporary explore chat messages (not persisted)
+  const [exploreMessages, setExploreMessages] = useState([]);
+  // messagesStore used previously removed. Messages for routines not needed.
+
+  /* UI state */
+  const [currentRoutineId, setCurrentRoutineId] = useState(() => (routines[0]?.id ?? null));
+  const [currentView, setCurrentView] = useState("explore"); // explore, setGoal, diary, calendar, settings
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isAILoading, setIsAILoading] = useState(false);
+  const [pendingTrackingStyle, setPendingTrackingStyle] = useState(null);
+
+  // calendar nav: -1 prev, 0 current, 1 next
+  const [calendarOffset, setCalendarOffset] = useState(0);
+
+  // diary view navigation
+  const [diaryMode, setDiaryMode] = useState("today"); // today, pastDatesList, dateView
+  const [diarySelectedDate, setDiarySelectedDate] = useState(null);
+  const [diarySearch, setDiarySearch] = useState("");
+
+  // temporary AI grammar state
+  const [grammarProcessing, setGrammarProcessing] = useState(false);
+  const [grammarOutput, setGrammarOutput] = useState("");
+
+  // UI helpers
+  const chatEndRef = useRef(null);
+  useEffect(() => {
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 60);
+  }, [exploreMessages, isAILoading]);
+
+  /* ===========================
+     On load cleanup: rotate/delete sticky notes older than yesterday
+     =========================== */
+  useEffect(() => {
+    const today = dateKey(new Date());
+    const yesterday = dateKey(addDays(new Date(), -1));
+    // Cleanup: remove sticky entries older than yesterday
+    const clone = { ...stickyStore };
+    let changed = false;
+    Object.keys(clone).forEach((rid) => {
+      const entries = clone[rid];
+      Object.keys(entries).forEach((dk) => {
+        if (dk < yesterday) {
+          delete entries[dk];
+          changed = true;
+        }
+      });
+      // if object is empty leave it (no problem)
+    });
+    if (changed) setStickyStore(clone);
+    // prune routines with no sticky? not necessary
+    // ensure calendarOffset within [-1,1]
+    setCalendarOffset((n) => Math.max(-1, Math.min(1, n)));
+  }, []); // run on mount
+
+  /* ===========================
+     Helper functions
+     =========================== */
+  const updateRoutines = (cb) => setRoutines((prev) => {
+    const next = cb(prev.slice());
+    save("aeryth_routines", next);
+    return next;
+  });
+
+  const updateSticky = (routineId, dateStr, patch) => {
+    setStickyStore(prev => {
+      const next = { ...prev };
+      next[routineId] = next[routineId] ? { ...next[routineId] } : {};
+      next[routineId][dateStr] = { ...(next[routineId][dateStr] || { text: "", color: "#8b5cf6" }), ...patch };
+      save("aeryth_sticky", next);
+      return next;
+    });
+  };
+
+  /* ===========================
+     Explore (temporary chat) functions
+     =========================== */
+  const pushExploreMessage = (m) => setExploreMessages(prev => [...prev, { id: crypto.randomUUID(), ...m }]);
+
+  const handleNewChat = () => {
+    // Resets the temporary explore chat
+    setExploreMessages([]);
+    setCurrentView("explore");
+    // keep currentRoutineId unchanged
+  };
+
+  const handleSendExplore = async (text) => {
+    if (!text?.trim() || isAILoading) return;
+    const userMsg = { sender: "user", text: text.trim(), timestamp: new Date() };
+    pushExploreMessage(userMsg);
+
+    const up = text.trim().toUpperCase();
+    if (up === "EVIDENCE" || up === "REMINDER") {
+      setPendingTrackingStyle(up.toLowerCase());
+      pushExploreMessage({ sender: "aeryth", text: "Perfect. I've noted your preference. Now use Set Goal and fill details.", timestamp: new Date() });
+      return;
     }
 
-    if (!systemPrompt) throw new Error("Invalid task for Gemini Diary API.");
-
-    const payload = {
-        contents: [{ parts: [{ text }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-    };
-
-    const fetcher = async () => {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            const errorBody = await response.text();
-            console.error("Gemini Diary API error:", errorBody);
-            throw new Error(`API call failed: ${response.status}`);
-        }
-        const result = await response.json();
-        const resultText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!resultText) throw new Error("Invalid API response.");
-        return resultText;
-    };
-
-    return withBackoff(fetcher);
-};
-
-
-// --- FIREBASE AND AUTH SETUP ---
-let db = null;
-let auth = null;
-
-const App = () => {
-    // --- STATE MANAGEMENT ---
-    const [authStatus, setAuthStatus] = useState('loading');
-    const [userId, setUserId] = useState(null);
-    const [isAuthReady, setIsAuthReady] = useState(false);
-    
-    const [currentView, setCurrentView] = useState('explore');
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true); 
-
-    const [routines, setRoutines] = useState([]);
-    const [userSettings, setUserSettings] = useState(null); 
-    const [isAILoading, setIsAILoading] = useState(false); 
-    
-    // -- NEW: Diary State --
-    const [diaryEntries, setDiaryEntries] = useState([]);
-
-    // -- NEW: Multi-Chat State --
-    const [chats, setChats] = useState([]);
-    const [currentChatId, setCurrentChatId] = useState(null);
-    const [messages, setMessages] = useState([]); 
-    
-    // -- NEW: Goal Setting State --
-    const [goalFormData, setGoalFormData] = useState({});
-    const [pendingTrackingStyle, setPendingTrackingStyle] = useState(null);
-
-    const chatEndRef = useRef(null);
-    const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-
-    // FIX: Dedicated useEffect for scrolling to the bottom whenever messages change.
-    useEffect(() => {
-        // Use a timeout to ensure the DOM has updated before scrolling
-        const timer = setTimeout(() => {
-            scrollToBottom();
-        }, 100);
-        return () => clearTimeout(timer);
-    }, [messages]);
-
-    const alertUser = (message) => console.log(`[Aeryth Alert]: ${message}`); // Placeholder for a proper modal
-    
-    // --- 1. FIREBASE INITIALIZATION AND AUTH ---
-    useEffect(() => {
-        if (!Object.keys(firebaseConfig).length) return;
-        const app = initializeApp(firebaseConfig);
-        db = getFirestore(app);
-        auth = getAuth(app);
-        
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                setUserId(user.uid);
-                await checkSetupStatus(user.uid);
-            } else if (initialAuthToken) {
-                await signInWithCustomToken(auth, initialAuthToken);
-            } else {
-                await signInAnonymously(auth);
-            }
-            setIsAuthReady(true);
-        });
-    }, []);
-
-    const checkSetupStatus = async (uid) => {
-        if (!db) return;
-        const settingsRef = doc(db, `artifacts/${appId}/users/${uid}/settings/aeryth`);
-        const docSnap = await getDoc(settingsRef);
-        if (docSnap.exists()) {
-            setUserSettings(docSnap.data());
-            setAuthStatus('main'); 
-        } else {
-            setAuthStatus('setup'); 
-        }
-    };
-    
-    // --- 2. FIRESTORE DATA LISTENERS ---
-    useEffect(() => {
-        if (!isAuthReady || !userId || !db) return;
-
-        const settingsRef = doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`);
-        const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
-            if (docSnap.exists()) setUserSettings(docSnap.data());
-        });
-
-        const routinesRef = collection(db, `artifacts/${appId}/users/${userId}/routines`);
-        const unsubRoutines = onSnapshot(routinesRef, (snap) => {
-            const allRoutines = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setRoutines(allRoutines);
-        });
-
-        const chatSessionsRef = query(collection(db, `artifacts/${appId}/users/${userId}/chat_sessions`), orderBy('createdAt', 'desc'));
-        const unsubChatSessions = onSnapshot(chatSessionsRef, (snapshot) => {
-            const chatList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setChats(chatList);
-            if (!currentChatId && chatList.length > 0) {
-                setCurrentChatId(chatList[0].id);
-            } else if (chatList.length === 0) {
-                handleNewChat(false);
-            }
-        });
-
-        const diaryQuery = query(collection(db, `artifacts/${appId}/users/${userId}/diary_entries`), orderBy('createdAt', 'desc'));
-        const unsubDiary = onSnapshot(diaryQuery, (snapshot) => {
-            const entries = snapshot.docs.map(doc => ({ 
-                id: doc.id, 
-                ...doc.data(),
-                createdAt: doc.data().createdAt?.toDate() || new Date()
-            }));
-            setDiaryEntries(entries);
-        });
-
-        return () => {
-            unsubSettings();
-            unsubRoutines();
-            unsubChatSessions();
-            unsubDiary();
-        };
-    }, [isAuthReady, userId]);
-
-    useEffect(() => {
-        if (!currentChatId || !userId || !db) {
-            setMessages([]);
-            return;
-        };
-
-        const messagesQuery = query(collection(db, `artifacts/${appId}/users/${userId}/chats`), where("chatId", "==", currentChatId));
-        const unsubMessages = onSnapshot(messagesQuery, (snapshot) => {
-            const chatMessages = snapshot.docs.map(doc => ({ 
-                id: doc.id, 
-                ...doc.data(),
-                timestamp: doc.data().timestamp?.toDate() || new Date() 
-            }));
-            chatMessages.sort((a, b) => a.timestamp - b.timestamp);
-            setMessages(chatMessages);
-        });
-
-        return () => unsubMessages();
-    }, [currentChatId, userId]);
-
-
-    // --- 3. COMPONENT HANDLERS ---
-    const handleSetupComplete = (settings) => {
-        setUserSettings(settings);
-        setAuthStatus('main');
-        setCurrentView('explore');
-    };
-    
-    const handleNewChat = async (setActive = true) => {
-        if (!userId) return;
-        try {
-            const newChat = {
-                name: `New Chat on ${new Date().toLocaleDateString()}`,
-                createdAt: serverTimestamp(),
-            };
-            const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chat_sessions`), newChat);
-            if (setActive) {
-                setCurrentChatId(docRef.id);
-                setCurrentView('explore');
-            }
-        } catch (error) {
-            console.error("Failed to create new chat:", error)
-        }
-    };
-    
-    const handleDeleteChat = async (chatId, chatName) => {
-        alertUser(`Warning: This will permanently delete the chat "${chatName}" and its linked routine.`);
-        try {
-            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/chat_sessions`, chatId));
-            const q = query(collection(db, `artifacts/${appId}/users/${userId}/routines`), where("chatId", "==", chatId));
-            const querySnapshot = await getDocs(q);
-            const deletePromises = [];
-            querySnapshot.forEach((doc) => deletePromises.push(deleteDoc(doc.ref)));
-            await Promise.all(deletePromises);
-            
-            if (currentChatId === chatId) {
-                const remainingChats = chats.filter(c => c.id !== chatId);
-                setCurrentChatId(remainingChats.length > 0 ? remainingChats[0].id : null);
-            }
-             alertUser(`Successfully deleted "${chatName}".`);
-        } catch (error) {
-            console.error("Error deleting chat:", error);
-            alertUser("Failed to delete chat.");
-        }
-    };
-
-    const handleSendMessage = async (input) => {
-        if (!input.trim() || !userId || isAILoading || !currentChatId) return;
-
-        const userMessage = { 
-            sender: 'user', 
-            text: input, 
-            timestamp: new Date(),
-            chatId: currentChatId
-        };
-        
-        await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-            ...userMessage,
-            timestamp: serverTimestamp() 
-        });
-        
-        const upperInput = input.trim().toUpperCase();
-        if (upperInput === 'EVIDENCE' || upperInput === 'REMINDER') {
-            setPendingTrackingStyle(upperInput.toLowerCase());
-            const aiResponse = {
-                sender: 'aeryth',
-                text: "Perfect. I've noted your preference. Now, please use the 'Set Goal' button to fill in the details like time and days.",
-                timestamp: new Date(),
-                chatId: currentChatId
-            };
-            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-                ...aiResponse,
-                timestamp: serverTimestamp()
-            });
-            return;
-        }
-
-        setIsAILoading(true);
-        const apiHistory = [...messages, userMessage]; 
-
-        try {
-            const aiResponseText = await callGeminiAPI(apiHistory, userSettings, routines);
-            const aiMessage = { 
-                sender: 'aeryth', 
-                text: aiResponseText, 
-                timestamp: new Date(),
-                chatId: currentChatId
-            };
-            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-                ...aiMessage,
-                timestamp: serverTimestamp()
-            });
-        } catch (error) {
-            console.error("Gemini API call failed:", error);
-            const errorMessage = { 
-                sender: 'system', 
-                text: "Aeryth encountered a network or API error.", 
-                timestamp: new Date(),
-                chatId: currentChatId
-            };
-            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), { ...errorMessage, timestamp: serverTimestamp()});
-        } finally {
-            setIsAILoading(false);
-        }
-    };
-    
-    // --- 4. UI COMPONENTS ---
-
-    const LoadingScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500"><svg className="animate-spin h-8 w-8 text-violet-500 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p className="text-lg text-gray-700 font-semibold">Connecting to Aeryth's Core...</p></div></div>);
-    const LoginScreen = () => ( <div className="flex justify-center items-center h-screen bg-gray-900"><div className="text-center p-8 bg-white rounded-xl shadow-2xl w-96"><h1 className="text-4xl font-extrabold text-violet-600 mb-2">Welcome to Aeryth</h1><p className="text-gray-500 mb-6">Your shield of rhythm against procrastination.</p><button onClick={async () => { setAuthStatus('loading'); if (auth) await signInAnonymously(auth); }} className="w-full py-3 mb-3 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">Sign In as Guest</button><button className="w-full py-3 rounded-lg font-bold text-gray-700 bg-gray-200 transition shadow-md" disabled>Sign In with Google</button></div></div>);
-    const ChatMessage = ({ sender, text, timestamp, type }) => { 
-        const isUser = sender === 'user', isSystem = sender === 'system'; 
-        if (isSystem && type === 'goal_set') {
-            return (
-                <div className="flex justify-center items-center my-4">
-                    <div className="w-full border-t border-violet-200"></div>
-                    <div className="text-center text-sm font-semibold text-violet-600 bg-violet-100 px-4 py-2 rounded-full mx-4 whitespace-nowrap shadow">
-                        🎯 {text}
-                    </div>
-                    <div className="w-full border-t border-violet-200"></div>
-                </div>
-            );
-        }
-        if (isSystem) return <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM ERROR]: {text}</div></div>; 
-        return <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}><div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? 'bg-violet-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-tl-none border'}`}><p className="whitespace-pre-wrap">{text}</p><span className={`block text-xs mt-1 ${isUser ? 'text-violet-200' : 'text-gray-400'}`}>{timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Sending...'}</span></div></div>;
-    };
-    const PlaceholderView = ({ title, toggleSidebar, isSidebarOpen, setCurrentView }) => ( <div className="p-8 h-full flex flex-col items-center justify-center bg-transparent relative">{!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}<div className="text-center p-10 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500"><h2 className="text-3xl font-extrabold text-violet-600 mb-4">{title}</h2><p className="text-xl text-gray-600">This view is coming in a later phase!</p><button onClick={() => setCurrentView('explore')} className="mt-6 text-sm text-violet-500 hover:text-violet-700 font-medium">Go Back to Chat</button></div></div>);
-    
-    const SetupScreen = ({ authStatus, setCurrentView }) => {
-        const isFirstTimeSetup = authStatus === 'setup';
-        const [setupData, setSetupData] = useState({
-            aerythTone: userSettings?.aerythTone || 'Friendly',
-            userInfo: userSettings?.userInfo || '',
-            routineCriteria: userSettings?.routineCriteria || 'No harsh words until 3 snoozes.',
-            isSaving: false,
-        });
-
-        const handleChange = (e) => setSetupData(p => ({ ...p, [e.target.name]: e.target.value }));
-
-        const handleSaveSetup = async () => {
-            if (!userId) { alertUser("Auth not ready."); return; }
-            setSetupData(p => ({ ...p, isSaving: true }));
-            const { isSaving, ...settingsToSave } = setupData;
-            try {
-                await setDoc(doc(db, `artifacts/${appId}/users/${userId}/settings/aeryth`), settingsToSave, { merge: true }); 
-                if (isFirstTimeSetup) handleSetupComplete(settingsToSave);
-                else { alertUser("Settings saved!"); setCurrentView('explore'); }
-            } catch (error) { console.error("Error saving setup:", error); } 
-            finally { setSetupData(p => ({ ...p, isSaving: false })); }
-        };
-        
-        return (
-            <div className="flex justify-center items-center h-screen bg-transparent p-4 overflow-y-auto">
-                <div className="w-full max-w-2xl p-8 bg-white rounded-xl shadow-2xl border-t-4 border-violet-500 my-8">
-                    {!isFirstTimeSetup && <button onClick={() => setCurrentView('explore')} className="text-violet-500 hover:text-violet-700 font-semibold mb-4 flex items-center"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>Back</button>}
-                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">{isFirstTimeSetup ? "Aeryth Initial Setup" : "Edit Aeryth Settings"}</h2>
-                    <p className="text-gray-600 mb-8">Personalize your companion for maximum effect.</p>
-                    <div className="space-y-6">
-                        <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">Aeryth's Tone</label>
-                            <select name="aerythTone" value={setupData.aerythTone} onChange={handleChange} className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500 focus:border-violet-500">
-                                <option value="Friendly">Friendly (Default)</option>
-                                <option value="Tough Love Coach">Tough Love Coach</option>
-                                <option value="Gentle Assistant">Gentle Assistant</option>
-                                <option value="Hyper-Logical Analyst">Hyper-Logical Analyst</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">About You</label>
-                            <textarea name="userInfo" value={setupData.userInfo} onChange={handleChange} rows="3" className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500" placeholder="I work best under pressure..." />
-                        </div>
-                        <div>
-                            <label className="block text-lg font-bold text-gray-700 mb-2">Routine criteria</label>
-                            <input type="text" name="routineCriteria" value={setupData.routineCriteria} onChange={handleChange} className="mt-1 p-3 block w-full border rounded-lg shadow-sm focus:ring-violet-500" placeholder="e.g., Don't message me after 10 PM." />
-                        </div>
-                    </div>
-                    <div className="flex space-x-4 mt-8">
-                        <button onClick={handleSaveSetup} disabled={setupData.isSaving} className={`flex-1 py-3 rounded-lg font-bold text-white transition shadow-lg ${setupData.isSaving ? 'bg-gray-400' : 'bg-violet-500 hover:bg-violet-600'}`}>{setupData.isSaving ? 'Saving...' : (isFirstTimeSetup ? 'Complete Setup' : 'Save Changes')}</button>
-                        {isFirstTimeSetup && <button onClick={handleSaveSetup} disabled={setupData.isSaving} className={`py-3 px-6 rounded-lg font-bold transition ${setupData.isSaving ? 'text-gray-400' : 'text-violet-500 hover:text-violet-700'}`}>Skip</button>}
-                    </div>
-                </div>
-            </div>
-        );
-    };
-
-    const Sidebar = ({ toggleSidebar }) => {
-        const now = new Date();
-        const eightHoursFromNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-        const upcomingRoutines = routines
-            .filter(r => {
-                const [hours, minutes] = r.startTime.split(':');
-                const routineTimeToday = new Date();
-                routineTimeToday.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-                return routineTimeToday >= now && routineTimeToday <= eightHoursFromNow;
-            })
-            .sort((a, b) => (a.startTime > b.startTime) ? 1 : -1)
-            .slice(0, 2);
-
-        return (
-            <div className="w-80 flex-shrink-0 h-full p-4 space-y-4 bg-white overflow-y-auto relative flex flex-col">
-                <button onClick={toggleSidebar} className="absolute left-4 top-4 z-50 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Toggle Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>
-                <div className="text-center pb-2 border-b pt-10">
-                    <h3 className="text-2xl font-extrabold text-violet-600">Aeryth</h3>
-                    <p className="text-sm text-gray-500">Rhythm Partner</p>
-                </div>
-
-                <button onClick={() => handleNewChat()} className="w-full text-center py-3 mb-2 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">+ New Chat</button>
-                <input type="text" placeholder="Search routines..." className="w-full p-3 border rounded-xl focus:ring-violet-500" disabled />
-
-                <div className="space-y-2">
-                    <h4 className="text-sm font-semibold text-gray-800">Next Routines (in 8 hours):</h4>
-                    {upcomingRoutines.length > 0 ? upcomingRoutines.map(r => (
-                        <div key={r.id} className="p-3 bg-violet-50 rounded-xl border-l-4 border-violet-400 shadow-md">
-                            <p className="text-sm text-violet-800 font-bold">{r.goal}</p>
-                            <p className="text-xs text-violet-600 mt-1">Time: {r.startTime} - {r.endTime}</p>
-                        </div>
-                    )) : (<p className="text-sm text-gray-500 italic p-3">No upcoming routines.</p>)}
-                </div>
-
-                <h4 className="text-sm font-semibold text-gray-800 pt-3 border-t mt-3">Routines:</h4>
-                <div className="flex-1 overflow-y-auto space-y-2">
-                    {chats.map(chat => (
-                         <div key={chat.id} className={`flex items-center w-full p-3 rounded-xl transition group ${currentChatId === chat.id ? 'bg-violet-100' : 'hover:bg-gray-100'}`}>
-                            <button onClick={() => setCurrentChatId(chat.id)} className={`flex-1 text-left text-sm ${currentChatId === chat.id ? 'text-violet-800 font-bold' : 'text-gray-700'}`}>{chat.name}</button>
-                            <button onClick={() => handleDeleteChat(chat.id, chat.name)} className="ml-2 p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.134-2.036-2.134H8.716c-1.12 0-2.036.954-2.036 2.134v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg></button>
-                         </div>
-                    ))}
-                </div>
-
-                <div className="pt-4 border-t space-y-2">
-                    <button onClick={() => setCurrentView('calendar')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'calendar' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">🗓️</span>Calendar</button>
-                    <button onClick={() => setCurrentView('diary')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'diary' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">✍️</span>Diary</button>
-                    <button onClick={() => setCurrentView('settings')} className={`flex items-center w-full p-3 rounded-xl transition ${currentView === 'settings' ? 'bg-violet-100 text-violet-800 font-bold' : 'hover:bg-gray-200'}`}><span className="text-xl mr-3">⚙️</span>Settings</button>
-                </div>
-            </div>
-        );
-    };
-    
-    const SetGoalView = ({ toggleSidebar, isSidebarOpen }) => {
-        const [goal, setGoal] = useState('');
-        const [startTime, setStartTime] = useState('09:00');
-        const [endTime, setEndTime] = useState('10:00');
-        const [days, setDays] = useState([]);
-        const [isSaving, setIsSaving] = useState(false);
-        const availableDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-        useEffect(() => {
-            if (currentChatId && goalFormData[currentChatId]) {
-                const data = goalFormData[currentChatId];
-                setGoal(data.goal || '');
-                setStartTime(data.startTime || '09:00');
-                setEndTime(data.endTime || '10:00');
-                setDays(data.days || []);
-            } else {
-                setGoal(''); setStartTime('09:00'); setEndTime('10:00'); setDays([]);
-            }
-        }, [currentChatId, goalFormData]);
-
-        const handleChange = (field, value) => {
-            const setters = { goal: setGoal, startTime: setStartTime, endTime: setEndTime, days: setDays };
-            if (setters[field]) setters[field](value);
-
-            setGoalFormData(prev => ({
-                ...prev,
-                [currentChatId]: { ...prev[currentChatId], [field]: value }
-            }));
-        };
-
-        const handleDayToggle = (day) => {
-            const newDays = days.includes(day) ? days.filter(d => d !== day) : [...days, day];
-            handleChange('days', newDays);
-        };
-
-        const handleSaveGoal = async () => {
-            if (!goal.trim() || !startTime || !endTime || days.length === 0 || !currentChatId) {
-                alertUser("Please fill out all fields: goal, time, and at least one day."); return;
-            }
-            if (!pendingTrackingStyle) {
-                alertUser("Please first tell Aeryth in the chat whether you want 'evidence' or 'reminder' based tracking."); return;
-            }
-            setIsSaving(true);
-            
-            try {
-                const newRoutine = { goal, startTime, endTime, days, chatId: currentChatId, trackingStyle: pendingTrackingStyle, createdAt: serverTimestamp() };
-                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/routines`), newRoutine);
-                await setDoc(doc(db, `artifacts/${appId}/users/${userId}/chat_sessions`, currentChatId), { name: goal }, { merge: true });
-                
-                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/chats`), {
-                    sender: 'system', type: 'goal_set', text: `Goal Set: ${goal}`, timestamp: serverTimestamp(), chatId: currentChatId
-                });
-
-                setGoalFormData(prev => { const newFormData = {...prev}; delete newFormData[currentChatId]; return newFormData; });
-                setPendingTrackingStyle(null);
-                alertUser("Routine successfully set!");
-                setCurrentView('explore');
-            } catch (error) {
-                console.error("Failed to save goal:", error);
-            } finally {
-                setIsSaving(false);
-            }
-        };
-
-        return (
-            <div className="p-8 h-full flex flex-col items-center justify-center bg-transparent relative">
-                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
-                <div className="text-left p-8 bg-white rounded-xl shadow-2xl w-full max-w-xl border-t-4 border-violet-500">
-                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">Set a New Routine</h2>
-                    <p className="text-gray-600 mb-6">This goal will be linked to the current chat.</p>
-                    <div className="space-y-4">
-                        <div><label className="font-bold text-gray-700">Goal:</label><input type="text" value={goal} onChange={(e) => handleChange('goal', e.target.value)} placeholder="e.g., Study History for 1 hour" className="mt-1 p-3 w-full border rounded-lg"/></div>
-                        <div className="flex space-x-4">
-                            <div className="flex-1"><label className="font-bold text-gray-700">Start Time:</label><input type="time" value={startTime} onChange={(e) => handleChange('startTime', e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
-                            <div className="flex-1"><label className="font-bold text-gray-700">End Time:</label><input type="time" value={endTime} onChange={(e) => handleChange('endTime', e.target.value)} className="mt-1 p-3 w-full border rounded-lg"/></div>
-                        </div>
-                        <div><label className="font-bold text-gray-700">Repeat on:</label><div className="flex justify-center space-x-1 mt-2">{availableDays.map(d => <button key={d} onClick={() => handleDayToggle(d)} className={`w-10 h-10 font-bold rounded-full transition ${days.includes(d) ? 'bg-violet-500 text-white' : 'bg-gray-200 text-gray-600'}`}>{d[0]}</button>)}</div></div>
-                    </div>
-                     <div className="flex space-x-4 mt-8">
-                        <button onClick={handleSaveGoal} disabled={isSaving} className={`flex-1 py-3 rounded-lg font-bold text-white transition shadow-lg ${isSaving ? 'bg-gray-400':'bg-violet-500 hover:bg-violet-600'}`}>{isSaving ? 'Saving...' : 'Set Goal'}</button>
-                        <button onClick={() => setCurrentView('explore')} className="py-3 px-6 rounded-lg font-bold transition text-violet-500 hover:text-violet-700">Cancel</button>
-                    </div>
-                </div>
-            </div>
-        );
-    };
-
-    const ChatView = ({ toggleSidebar, isSidebarOpen }) => {
-        const [input, setInput] = useState('');
-        const handleSubmit = (e) => { e.preventDefault(); if (input.trim()) { handleSendMessage(input); setInput(''); } };
-        return (
-            <div className="flex-1 flex flex-col h-full bg-transparent relative">
-                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-10 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
-                <div className="flex-1 p-6 space-y-4 overflow-y-auto" style={{ paddingBottom: '120px' }}> 
-                    <div className="text-center text-gray-500 italic mb-6">Aeryth's Tone: <span className="font-semibold text-violet-600">{userSettings?.aerythTone || 'Default'}</span></div>
-                    {messages.map((msg, index) => (<ChatMessage key={msg.id || index} {...msg} />))}
-                    {isAILoading && (<div className="flex justify-start"><div className="bg-white text-gray-600 px-4 py-3 rounded-2xl shadow-md flex items-center space-x-2 border"><svg className="animate-spin h-5 w-5 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Aeryth is thinking...</span></div></div>)}
-                    <div ref={chatEndRef} />
-                </div>
-                <form onSubmit={handleSubmit} className="absolute bottom-0 w-full p-4 border-t bg-white">
-                    <div className="flex justify-around mb-3">
-                        <button type="button" onClick={() => setCurrentView('explore')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'explore' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Explore</button>
-                        <button type="button" onClick={() => setCurrentView('setGoal')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'setGoal' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Set Goal</button>
-                        <button type="button" onClick={() => setCurrentView('diary')} className={`flex-1 mx-1 py-2 text-sm font-semibold rounded-full transition shadow-md ${currentView === 'diary' ? 'bg-violet-500 text-white' : 'bg-gray-200 hover:bg-violet-100'}`}>Diary</button>
-                    </div>
-                    <div className="flex space-x-3">
-                        <input type="text" placeholder={isAILoading ? "Waiting for Aeryth..." : "Start exploring a new task..."} value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-500 shadow-inner"/>
-                        <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold transition shadow-lg ${isAILoading || !input.trim() ? 'bg-gray-400 cursor-not-allowed' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>{isAILoading ? '...' : 'Send'}</button>
-                    </div>
-                </form>
-            </div>
-        );
-    };
-
-    // --- NEW: Diary View Component ---
-    const DiaryView = ({ toggleSidebar, isSidebarOpen, setCurrentView }) => {
-        const [entry, setEntry] = useState('');
-        const [summary, setSummary] = useState('');
-        const [correctedText, setCorrectedText] = useState('');
-        const [processingTask, setProcessingTask] = useState(null); // 'summarize', 'correct', 'save'
-        const [selectedEntry, setSelectedEntry] = useState(null);
-
-        const handleApiCall = async (task) => {
-            if (!entry.trim()) {
-                alertUser("Please write something first.");
-                return;
-            }
-            setProcessingTask(task);
-            try {
-                const result = await callGeminiForDiary(entry, task);
-                if (task === 'summarize') setSummary(result);
-                if (task === 'correct_grammar') setCorrectedText(result);
-            } catch (error) {
-                console.error(`Diary ${task} error:`, error);
-                alertUser(`Failed to ${task}.`);
-            } finally {
-                setProcessingTask(null);
-            }
-        };
-
-        const handleSave = async () => {
-            const finalEntry = correctedText || entry;
-            if (!finalEntry.trim()) {
-                alertUser("Cannot save an empty entry.");
-                return;
-            }
-            setProcessingTask('save');
-            try {
-                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/diary_entries`), {
-                    originalText: entry,
-                    finalText: finalEntry,
-                    summary: summary || 'No summary generated.',
-                    createdAt: serverTimestamp()
-                });
-                setEntry('');
-                setSummary('');
-                setCorrectedText('');
-                alertUser("Diary entry saved!");
-            } catch (error) {
-                console.error("Error saving diary entry:", error);
-            } finally {
-                setProcessingTask(null);
-            }
-        };
-        
-        const viewNewEntryMode = () => {
-            setSelectedEntry(null);
-            setEntry('');
-            setSummary('');
-            setCorrectedText('');
-        }
-
-        const viewPastEntry = (pastEntry) => {
-            setSelectedEntry(pastEntry);
-            setEntry(pastEntry.finalText);
-            setSummary(pastEntry.summary);
-            setCorrectedText('');
-        }
-        
-        const isProcessing = !!processingTask;
-
-        return (
-            <div className="h-full flex bg-transparent relative overflow-hidden">
-                {!isSidebarOpen && (<button onClick={toggleSidebar} className="absolute right-4 top-4 z-20 p-2 bg-violet-500 hover:bg-violet-600 text-white rounded-full shadow-lg transition" title="Open Sidebar"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg></button>)}
-                
-                {/* Past Entries List */}
-                <div className="w-1/3 h-full bg-white/80 backdrop-blur-sm border-r p-4 flex flex-col">
-                    <h3 className="text-xl font-bold text-violet-700 mb-4">Past Entries</h3>
-                    <button onClick={viewNewEntryMode} className="w-full text-center py-2 mb-3 rounded-lg font-semibold text-white bg-violet-500 hover:bg-violet-600 transition shadow-md">+ New Entry</button>
-                    <div className="flex-1 overflow-y-auto space-y-2">
-                        {diaryEntries.map(e => (
-                             <div key={e.id} onClick={() => viewPastEntry(e)} className={`p-3 rounded-lg cursor-pointer border-l-4 transition ${selectedEntry?.id === e.id ? 'bg-violet-100 border-violet-500' : 'bg-gray-50 hover:bg-violet-50 border-gray-300'}`}>
-                                <p className="text-sm font-semibold text-gray-800 truncate">{e.finalText}</p>
-                                <p className="text-xs text-gray-500">{e.createdAt.toLocaleDateString()}</p>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Main Editor */}
-                <div className="flex-1 h-full p-6 flex flex-col">
-                    <h2 className="text-3xl font-extrabold text-violet-600 mb-2">{selectedEntry ? "Viewing Entry" : "New Diary Entry"}</h2>
-                    <p className="text-gray-600 mb-4">{selectedEntry ? selectedEntry.createdAt.toLocaleString() : "What's on your mind?"}</p>
-                    
-                    <textarea value={entry} onChange={(e) => setEntry(e.target.value)} disabled={isProcessing || selectedEntry} placeholder="Start writing here..." className="flex-1 w-full p-4 border rounded-lg shadow-inner resize-none text-lg leading-relaxed focus:ring-2 focus:ring-violet-400 disabled:bg-gray-100"></textarea>
-                    
-                    {!selectedEntry && (
-                        <div className="flex space-x-2 mt-4">
-                            <button onClick={() => handleApiCall('correct_grammar')} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-semibold bg-blue-100 text-blue-800 hover:bg-blue-200 disabled:bg-gray-300 transition">
-                                {processingTask === 'correct_grammar' ? 'Checking...' : 'Correct Grammar'}
-                            </button>
-                            <button onClick={() => handleApiCall('summarize')} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-semibold bg-indigo-100 text-indigo-800 hover:bg-indigo-200 disabled:bg-gray-300 transition">
-                                {processingTask === 'summarize' ? 'Summarizing...' : 'Summarize'}
-                            </button>
-                            <button onClick={handleSave} disabled={isProcessing} className="flex-1 py-2 px-4 rounded-lg font-bold text-white bg-violet-500 hover:bg-violet-600 disabled:bg-gray-400 transition">
-                                {processingTask === 'save' ? 'Saving...' : 'Save Entry'}
-                            </button>
-                        </div>
-                    )}
-                    
-                    {correctedText && !selectedEntry && (
-                        <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                             <h4 className="font-bold text-blue-800">Suggested Correction:</h4>
-                             <p className="text-blue-900 my-2">{correctedText}</p>
-                             <button onClick={() => { setEntry(correctedText); setCorrectedText(''); }} className="text-sm font-semibold text-blue-600 hover:text-blue-800">Accept Correction</button>
-                        </div>
-                    )}
-
-                    {summary && (
-                        <div className="mt-4 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
-                             <h4 className="font-bold text-indigo-800">AI Summary:</h4>
-                             <p className="text-indigo-900 my-2">{summary}</p>
-                        </div>
-                    )}
-
-                </div>
-            </div>
-        );
+    if (!ensureModelAvailable()) {
+      pushExploreMessage({ sender: "aeryth", text: "Local Gemini Nano not available in this browser.", timestamp: new Date() });
+      return;
     }
 
-    // --- 5. MAIN RENDER LOGIC ---
-    const MainViewRenderer = () => {
-        const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
-        switch (currentView) {
-            case 'settings': return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
-            case 'explore': return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
-            case 'setGoal': return <SetGoalView {...{toggleSidebar, isSidebarOpen, setGoalFormData, goalFormData, currentChatId, pendingTrackingStyle, setPendingTrackingStyle, alertUser, setCurrentView}} />;
-            case 'diary': return <DiaryView {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
-            case 'calendar': return <PlaceholderView title="Calendar View (Phase 4)" {...{toggleSidebar, isSidebarOpen, setCurrentView}} />;
-            default: return <ChatView toggleSidebar={toggleSidebar} isSidebarOpen={isSidebarOpen} />;
-        }
+    setIsAILoading(true);
+    try {
+      const chatHistory = [...exploreMessages, userMsg];
+      const aiText = await callGemini("explore-temp", chatHistory, settings, routines);
+      pushExploreMessage({ sender: "aeryth", text: aiText ?? "No output", timestamp: new Date() });
+    } catch (e) {
+      console.error("AI failed", e);
+      pushExploreMessage({ sender: "system", text: "Aeryth encountered an AI error.", timestamp: new Date() });
+    } finally {
+      setIsAILoading(false);
     }
+  };
 
-    if (authStatus === 'loading' || !isAuthReady) return <LoadingScreen />;
-    if (authStatus === 'login') return <LoginScreen />;
-    if (authStatus === 'setup') return <SetupScreen authStatus={authStatus} setCurrentView={setCurrentView} />;
-    
-    // FIX: Main layout updated to place sidebar on the right.
+  /* ===========================
+     Set Goal (Routine) functions
+     =========================== */
+  const handleCreateRoutine = ({ name, goal, startTime, endTime, days, color }) => {
+    const id = crypto.randomUUID();
+    const r = { id, name, goal, startTime, endTime, days, color: color || "#8b5cf6", createdAt: new Date() };
+    updateRoutines(prev => [r, ...prev]);
+    // initialize stickyStore entries for prev/today/next
+    const today = dateKey(new Date());
+    const prevDay = dateKey(addDays(new Date(), -1));
+    const nextDay = dateKey(addDays(new Date(), 1));
+    setStickyStore(prev => {
+      const next = { ...(prev || {}) };
+      next[id] = next[id] || {};
+      next[id][prevDay] = next[id][prevDay] || { text: "", color: r.color };
+      next[id][today] = next[id][today] || { text: "", color: r.color };
+      next[id][nextDay] = next[id][nextDay] || { text: "", color: r.color };
+      save("aeryth_sticky", next);
+      return next;
+    });
+
+    setCurrentRoutineId(id);
+    setCurrentView("explore");
+  };
+
+  const handleDeleteRoutine = (id) => {
+    if (!confirm("Delete routine and its sticky notes?")) return;
+    updateRoutines(prev => prev.filter(r => r.id !== id));
+    setStickyStore(prev => {
+      const next = { ...prev };
+      delete next[id];
+      save("aeryth_sticky", next);
+      return next;
+    });
+    if (currentRoutineId === id) setCurrentRoutineId(routines[0]?.id ?? null);
+  };
+
+  const handleRenameRoutine = (id, newName) => {
+    updateRoutines(prev => prev.map(r => (r.id === id ? { ...r, name: newName } : r)));
+  };
+
+  /* ===========================
+     Calendar functions
+     - limited to previous, current, next month
+     - routines are shown on days matching their day-of-week membership
+     =========================== */
+  const getMonthMatrix = (year, month) => {
+    // returns array of weeks, each week array of 7 Date objects (or null)
+    const first = new Date(year, month, 1);
+    const startDay = first.getDay(); // 0 Sun .. 6 Sat
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const weeks = [];
+    let cur = 1 - startDay;
+    while (cur <= daysInMonth) {
+      const week = [];
+      for (let i = 0; i < 7; i++) {
+        if (cur < 1 || cur > daysInMonth) week.push(null);
+        else week.push(new Date(year, month, cur));
+        cur++;
+      }
+      weeks.push(week);
+      if (weeks.length > 6) break;
+    }
+    return weeks;
+  };
+
+  const routinesForDate = (date) => {
+    if (!date) return [];
+    // match by day name
+    const dayName = date.toLocaleDateString(undefined, { weekday: "short" }); // Mon, Tue
+    return routines.filter((r) => r.days?.includes(dayName));
+  };
+
+  const handleCalendarDayClick = (date) => {
+    // open day view: show routines for that date
+    setCurrentView("calendar");
+    setCalendarOffset((off) => off); // keep current month
+    // We'll open a modal-like dayPanel inside calendar component (done in JSX)
+    // Use state to store selected day
+    setCalendarSelectedDate(dateKey(date));
+  };
+
+  const [calendarSelectedDate, setCalendarSelectedDate] = useState(null);
+  const changeRoutineColor = (rid, newColor) => {
+    updateRoutines(prev => prev.map(r => r.id === rid ? { ...r, color: newColor } : r));
+    // also update sticky default colors for future sticky notes
+    setStickyStore(prev => {
+      const next = { ...prev };
+      next[rid] = next[rid] ? { ...next[rid] } : {};
+      // do not overwrite existing sticky text, only default color for today if exists
+      Object.keys(next[rid] || {}).forEach(k => {
+        next[rid][k] = { ...next[rid][k], color: newColor };
+      });
+      save("aeryth_sticky", next);
+      return next;
+    });
+  };
+
+  const changeRoutineTime = (rid, newStart, newEnd) => {
+    updateRoutines(prev => prev.map(r => r.id === rid ? { ...r, startTime: newStart, endTime: newEnd } : r));
+  };
+
+  /* ===========================
+     Diary features
+     - structured per day and month
+     =========================== */
+  const diaryTodayKey = dateKey(new Date());
+  const diaryEntriesByDate = diaryEntries.reduce((acc, e) => {
+    const k = dateKey(new Date(e.createdAt));
+    acc[k] = acc[k] || [];
+    acc[k].push(e);
+    return acc;
+  }, {});
+
+  // returns daily summary placeholder (replace with summarizer API later)
+  const getDailySummary = (dateK) => {
+    // currently produce a simple concat summary or placeholder
+    const entries = diaryEntriesByDate[dateK] || [];
+    if (!entries.length) return null;
+    return `Summary (${entries.length} entries) — ${entries[0].finalText.slice(0, 60)}${entries[0].finalText.length > 60 ? "..." : ""}`;
+  };
+
+  const handleDiaryGrammar = async (text) => {
+    if (!text?.trim()) return;
+    setGrammarProcessing(true);
+    setGrammarOutput("");
+    try {
+      const out = await callGeminiDiary(text, "correct_grammar").catch(() => null);
+      setGrammarOutput(out || "");
+    } catch (e) {
+      console.error("grammar api", e);
+      setGrammarOutput("");
+    } finally {
+      setGrammarProcessing(false);
+    }
+  };
+
+  const handleDiarySave = (originalText, finalText) => {
+    const doc = { id: crypto.randomUUID(), originalText, finalText, createdAt: new Date(), timestamp: new Date().toISOString() };
+    setDiaryEntries(prev => {
+      const next = [doc, ...prev];
+      save("aeryth_diary_entries", next);
+      return next;
+    });
+  };
+
+  const handleDeleteDiaryEntry = (id) => {
+    setDiaryEntries(prev => {
+      const next = prev.filter(e => e.id !== id);
+      save("aeryth_diary_entries", next);
+      return next;
+    });
+  };
+
+  /* ===========================
+     TopPills component — use your exact code with one change for Explore active text color
+     =========================== */
+  const TopPills = ({ view, setView }) => (
+    <div className="flex-1 flex justify-around mb-3 gap-10">
+      <button
+        onClick={() => setView("explore")}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "explore" ? "bg-violet-500 text-black" : "bg-gray-100 hover:bg-violet-100"}`}
+      >
+        Explore
+      </button>
+
+      <button
+        onClick={() => setView("setGoal")}
+        className={`flex-1 px-4 py-2 rounded-full text-sm font-semibold transition shadow-md ${view === "setGoal" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}
+      >
+        Set Goal
+      </button>
+
+      <button
+        onClick={() => setView("diary")}
+        className={`flex-1 px-4 py-2 rounded-full font-semibold transition shadow-md ${view === "diary" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}
+      >
+        Diary
+      </button>
+    </div>
+  );
+
+  /* ===========================
+     Small components and UI elements
+     =========================== */
+  const IconMenu = ({ onClick }) => (
+    <button onClick={onClick} className="p-2 rounded-full bg-violet-500 text-white hover:bg-violet-600">
+      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+    </button>
+  );
+
+  /* ===========================
+     StickyNote component
+     - editable textarea
+     - color picker 4 colors
+     - saving live to localStorage
+     =========================== */
+  function StickyNote({ routineId, dateStr, readOnly }) {
+    const note = (stickyStore[routineId] && stickyStore[routineId][dateStr]) || { text: "", color: "#8b5cf6" };
+    const [text, setText] = useState(note.text || "");
+    const [color, setColor] = useState(note.color || "#8b5cf6");
+
+    useEffect(() => {
+      // when external stickyStore updated, sync
+      const n = (stickyStore[routineId] && stickyStore[routineId][dateStr]) || { text: "", color: "#8b5cf6" };
+      setText(n.text || "");
+      setColor(n.color || "#8b5cf6");
+    }, [routineId, dateStr, stickyStore]);
+
+    // live save with debounce
+    useEffect(() => {
+      const id = setTimeout(() => {
+        updateSticky(routineId, dateStr, { text, color });
+      }, 250);
+      return () => clearTimeout(id);
+    }, [text, color, routineId, dateStr]);
+
+    const colorOptions = ["#8b5cf6", "#06b6d4", "#f97316", "#ef4444"]; // violet, teal, orange, red
+
     return (
-        <div className="flex h-screen w-full font-sans bg-gradient-to-br from-violet-50 to-fuchsia-50 antialiased overflow-hidden">
-            <div className="flex-1 min-w-0">
-                <MainViewRenderer />
-            </div>
-            <div className={`transition-all duration-300 ${isSidebarOpen ? 'w-80' : 'w-0'} flex-shrink-0 overflow-hidden`}>
-                <div className="w-80 bg-white shadow-xl h-full border-l border-gray-200">
-                    <Sidebar toggleSidebar={() => setIsSidebarOpen(false)} />
-                </div>
-            </div>
+      <div className="rounded-md p-3 shadow-md" style={{ backgroundColor: "#fff", width: "100%" }}>
+        <div className="flex justify-between items-start mb-2">
+          <div className="font-semibold text-violet-700">Notes</div>
+          <div className="flex items-center space-x-2">
+            {colorOptions.map((c) => (
+              <button
+                key={c}
+                onClick={() => setColor(c)}
+                style={{ backgroundColor: c }}
+                className={`w-5 h-5 rounded-full border ${c === color ? "ring-2 ring-offset-1 ring-violet-300" : ""}`}
+                title="Change color"
+              />
+            ))}
+          </div>
         </div>
+
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={!!readOnly}
+          placeholder={readOnly ? "Read-only (previous day)" : "Type your sticky note here..."}
+          className={`w-full min-h-[120px] p-3 rounded-md resize-none border ${readOnly ? "bg-gray-50 text-gray-600" : "bg-white"} `}
+          style={{ borderColor: color }}
+        />
+      </div>
     );
-};
+  }
 
-export default App;
+  /* ===========================
+     Sidebar component (Routines)
+     - Toggle button inside when open (top-left)
+     - When closed, a fixed toggle top-right of main panel
+     =========================== */
+  function Sidebar() {
+    const now = new Date();
+    const eightHours = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const upcoming = routines.slice(0, 3); // simple
 
+    return (
+      <div className="w-80 h-full p-4 flex flex-col bg-white">
+        <div className="flex items-center justify-between mb-4 pt-6">
+          <div>
+            <h3 className="text-2xl font-extrabold text-violet-600">Aeryth</h3>
+            <p className="text-sm text-gray-500">Rhythm Partner</p>
+          </div>
+          {/* toggle inside sidebar */}
+          <button onClick={() => setIsSidebarOpen(false)} className="p-2 rounded-full bg-violet-500 text-white hover:bg-violet-600">
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* New Chat above New Routine */}
+        <div className="mb-3 space-y-2">
+          <button onClick={handleNewChat} className="w-full py-3 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
+          <button onClick={() => setCurrentView("setGoal")} className="w-full py-3 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>
+        </div>
+
+        <input placeholder="Search routines..." className="w-full p-3 border rounded-xl mb-3" disabled />
+
+
+        <div className="pt-4 border-t mt-4 space-y-2">
+          <button onClick={() => { setCurrentView("calendar"); setCalendarOffset(0); }} className={`flex items-center w-full p-3 rounded-xl ${currentView === "calendar" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">🗓️</span>Calendar</button>
+          <button onClick={() => setCurrentView("diary")} className={`flex items-center w-full p-3 rounded-xl ${currentView === "diary" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">✍️</span>Diary</button>
+          <button onClick={() => setCurrentView("settings")} className={`flex items-center w-full p-3 rounded-xl ${currentView === "settings" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">⚙️</span>Settings</button>
+        </div>
+      </div>
+    );
+  }
+
+  /* RoutineStrip component with inline 3-dot menu (rename/delete) */
+  function RoutineStrip({ r }) {
+    const [openMenu, setOpenMenu] = useState(false);
+    const [renaming, setRenaming] = useState(false);
+    const [tempName, setTempName] = useState(r.name);
+
+    useEffect(() => setTempName(r.name), [r.name]);
+
+    return (
+      <div className={`flex items-center p-3 rounded-xl ${currentRoutineId === r.id ? "bg-violet-100" : "hover:bg-gray-100"}`}>
+        <button onClick={() => { setCurrentRoutineId(r.id); setCurrentView("explore"); }} className="flex-1 text-left font-medium">{renaming ? (
+          <input value={tempName} onChange={(e) => setTempName(e.target.value)} onBlur={() => { handleRenameRoutine(r.id, tempName); setRenaming(false); }} className="w-full p-1 border-b" />
+        ) : tempName}</button>
+
+        <div className="relative">
+          <button onClick={() => setOpenMenu(s => !s)} className="p-1 text-gray-500 hover:text-gray-800">
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          </button>
+
+          {openMenu && (
+            <div className="absolute right-0 top-6 bg-white rounded-md shadow-lg py-1 w-36 z-40">
+              <button onClick={() => { setRenaming(true); setOpenMenu(false); }} className="w-full text-left px-3 py-2 hover:bg-gray-50">Rename</button>
+              <button onClick={() => { setOpenMenu(false); handleDeleteRoutine(r.id); }} className="w-full text-left px-3 py-2 hover:bg-gray-50 text-red-600">Delete</button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  /* ===========================
+     MainPanel content
+     =========================== */
+  function MainPanel() {
+    return (
+      <div className="flex-1 h-full p-6 overflow-hidden flex flex-col">
+        <TopPills view={currentView} setView={setCurrentView} />
+
+        {currentView === "explore" && (
+          <ExploreView />
+        )}
+
+        {currentView === "setGoal" && (
+          <SetGoalView onCreate={handleCreateRoutine} pendingTrackingStyle={pendingTrackingStyle} />
+        )}
+
+        {currentView === "diary" && (
+          <DiaryView />
+        )}
+
+        {currentView === "calendar" && (
+          <CalendarView />
+        )}
+
+        {currentView === "settings" && (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white p-6 rounded-xl shadow">
+              <h2 className="text-2xl font-bold text-violet-600 mb-3">Aeryth Settings</h2>
+              <div className="space-y-4">
+                <div>
+                  <label className="font-semibold">Aeryth's Tone</label>
+                  <select value={settings.aerythTone} onChange={e => { setSettings({ ...settings, aerythTone: e.target.value }); save("aeryth_settings", { ...settings, aerythTone: e.target.value }); }} className="w-full mt-1 p-3 border rounded-lg">
+                    <option>Friendly</option>
+                    <option>Tough Love Coach</option>
+                    <option>Gentle Assistant</option>
+                    <option>Hyper-Logical Analyst</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-semibold">About You</label>
+                  <textarea value={settings.userInfo} onChange={e => { setSettings({ ...settings, userInfo: e.target.value }); }} className="w-full mt-1 p-3 border rounded-lg" rows={3} />
+                </div>
+                <div>
+                  <label className="font-semibold">Routine criteria</label>
+                  <input value={settings.routineCriteria} onChange={e => { setSettings({ ...settings, routineCriteria: e.target.value }); }} className="w-full mt-1 p-3 border rounded-lg" />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={() => { save("aeryth_settings", settings); setCurrentView("explore"); }} className="bg-violet-500 text-white py-2 px-4 rounded font-bold">Save</button>
+                <button onClick={() => { /* reset local copy */ }} className="py-2 px-4 rounded border">Reset</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ===========================
+     Explore View (temporary chat)
+     =========================== */
+  function ExploreView() {
+    const [input, setInput] = useState("");
+    return (
+      <>
+        <div className="flex-1 overflow-y-auto space-y-4 pb-6">
+          <div className="text-center text-gray-500 italic mb-4">Aeryth's Tone: <span className="font-semibold text-violet-600">{settings?.aerythTone || "Friendly"}</span></div>
+          {exploreMessages.map((m) => <ChatMessage key={m.id} m={m} />)}
+          {isAILoading && <div className="flex justify-start"><div className="bg-white text-gray-600 px-4 py-3 rounded-2xl shadow-md flex items-center space-x-2 border"><svg className="animate-spin h-5 w-5 text-violet-500" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg><span>Aeryth is thinking...</span></div></div>}
+          <div ref={chatEndRef} />
+        </div>
+
+        <form onSubmit={(e) => { e.preventDefault(); handleSendExplore(input); setInput(""); }} className="pt-4 border-t bg-white p-4">
+          <div className="flex space-x-3">
+            <input value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} placeholder={isAILoading ? "Aeryth is thinking..." : "Start exploring a new task..."} className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-400" />
+            <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold ${isAILoading || !input.trim() ? "bg-gray-400 text-white" : "bg-violet-500 text-white hover:bg-violet-600"}`}>{isAILoading ? "..." : "Send"}</button>
+          </div>
+        </form>
+      </>
+    );
+  }
+
+  const ChatMessage = ({ m }) => {
+    const isUser = m.sender === "user";
+    const isSystem = m.sender === "system";
+    return isSystem ? (
+      m.type === "goal_set" ? (
+        <div className="flex justify-center my-4">
+          <div className="w-full border-t border-violet-200"></div>
+          <div className="text-center text-sm font-semibold text-violet-600 bg-violet-100 px-4 py-2 rounded-full mx-4 whitespace-nowrap shadow">🎯 {m.text}</div>
+          <div className="w-full border-t border-violet-200"></div>
+        </div>
+      ) : (
+        <div className="flex justify-center"><div className="text-center text-xs text-red-500 bg-red-100 p-2 rounded-lg max-w-sm shadow-md">[SYSTEM]: {m.text}</div></div>
+      )
+    ) : (
+      <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+        <div className={`max-w-xs sm:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl shadow-lg ${isUser ? "bg-violet-500 text-white rounded-br-none" : "bg-white text-gray-800 rounded-tl-none border"}`}>
+          <p className="whitespace-pre-wrap">{m.text}</p>
+          <span className={`block text-xs mt-1 ${isUser ? "text-violet-200" : "text-gray-400"}`}>{m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}</span>
+        </div>
+      </div>
+    );
+  };
+
+  /* ===========================
+     SetGoalView — direct open to form
+     - Days as rounded pills, selected => violet background
+     =========================== */
+  function SetGoalView({ onCreate, pendingTrackingStyle }) {
+    const [name, setName] = useState("");
+    const [goal, setGoal] = useState("");
+    const [startTime, setStartTime] = useState("09:00");
+    const [endTime, setEndTime] = useState("10:00");
+    const [days, setDays] = useState([]);
+    const [color, setColor] = useState("#8b5cf6");
+    const [isSaving, setIsSaving] = useState(false);
+    const availableDays = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+    const toggleDay = (d) => setDays(prev => prev.includes(d) ? prev.filter(x=>x!==d) : [...prev,d]);
+
+    const handleSave = async () => {
+      if (!name.trim() || !goal.trim() || days.length === 0) { alert("Fill routine name, goal and days"); return; }
+      if (!pendingTrackingStyle) { alert("Tell Aeryth EVIDENCE or REMINDER in chat first."); return; }
+      setIsSaving(true);
+      try {
+        await onCreate({ name: name.trim(), goal: goal.trim(), startTime, endTime, days, color });
+        setName(""); setGoal(""); setDays([]); setColor("#8b5cf6");
+      } finally {
+        setIsSaving(false);
+      }
+    };
+
+    return (
+      <div className="max-w-2xl w-full mx-auto">
+        <div className="bg-white p-6 rounded-xl shadow">
+          <h2 className="text-2xl font-bold text-violet-600 mb-3">Create Routine</h2>
+          <div className="space-y-4">
+            <div>
+              <label className="font-semibold">Routine name</label>
+              <input value={name} onChange={e=>setName(e.target.value)} className="w-full mt-1 p-3 border rounded-lg" placeholder="e.g., Java, Football, Math..." />
+            </div>
+
+            <div>
+              <label className="font-semibold">What do you want to achieve by this routine?</label>
+              <input value={goal} onChange={e=>setGoal(e.target.value)} className="w-full mt-1 p-3 border rounded-lg" placeholder="e.g., finish chapter 3" />
+            </div>
+
+            <div className="flex space-x-3">
+              <div className="flex-1">
+                <label className="font-semibold">Start</label>
+                <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)} className="w-full mt-1 p-3 border rounded-lg" />
+              </div>
+              <div className="flex-1">
+                <label className="font-semibold">End</label>
+                <input type="time" value={endTime} onChange={e=>setEndTime(e.target.value)} className="w-full mt-1 p-3 border rounded-lg" />
+              </div>
+            </div>
+
+            <div>
+              <label className="font-semibold">Repeat on</label>
+              <div className="flex gap-2 mt-2">
+                {availableDays.map(d => (
+                  <button key={d} onClick={() => toggleDay(d)} type="button"
+                    className={`w-10 h-10 rounded-full font-bold transition ${days.includes(d) ? "bg-violet-500 text-white" : "bg-gray-200 text-gray-700"}`}>{d[0]}</button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="font-semibold">Routine color</label>
+              <div className="flex gap-2 mt-2">
+                {["#8b5cf6","#06b6d4","#f97316","#ef4444"].map(c => (
+                  <button key={c} style={{ backgroundColor: c }} onClick={() => setColor(c)} className={`w-8 h-8 rounded-full border ${color===c ? "ring-2 ring-offset-1 ring-violet-300" : ""}`} />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3 mt-6">
+            <button onClick={handleSave} disabled={isSaving} className={`flex-1 py-3 rounded-lg ${isSaving ? "bg-gray-400 text-white" : "bg-violet-500 text-white"} font-bold`}>{isSaving ? "Saving..." : "Create Routine"}</button>
+            <button onClick={() => setCurrentView("explore")} className="py-3 px-6 rounded-lg border">Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ===========================
+     Diary View -- with requested hierarchy
+     =========================== */
+  function DiaryView() {
+    const todayKey = dateKey(new Date());
+    const [editorText, setEditorText] = useState("");
+    const [selectedEntry, setSelectedEntry] = useState(null); // viewing an entry
+    const [showPastDates, setShowPastDates] = useState(false);
+    const [selectedDateView, setSelectedDateView] = useState(null); // when viewing a date from past
+
+    useEffect(() => {
+      // reset editor when switching to diary today view
+      if (diaryMode === "today") {
+        setSelectedEntry(null);
+      }
+    }, [diaryMode]);
+
+    const todaysEntries = (diaryEntries || []).filter(e => dateKey(new Date(e.createdAt)) === todayKey);
+
+    const allDatesSorted = Object.keys(diaryEntries.reduce((acc, e) => {
+      const k = dateKey(new Date(e.createdAt));
+      acc[k] = true;
+      return acc;
+    }, {})).sort((a,b)=> (new Date(b) - new Date(a)));
+
+    const pastDates = allDatesSorted.filter(dk => dk !== todayKey);
+
+    const openDateView = (dk) => {
+      setSelectedDateView(dk);
+      setDiaryMode("dateView");
+    };
+
+    const backToDatesList = () => {
+      setDiaryMode("pastDatesList");
+      setSelectedDateView(null);
+    };
+
+    const backToToday = () => {
+      setDiaryMode("today");
+      setSelectedDateView(null);
+    };
+
+    const saveCurrentEntry = () => {
+      if (!editorText.trim()) return alert("Cannot save empty entry");
+      handleDiarySave(editorText, editorText);
+      setEditorText("");
+      alert("Saved");
+    };
+
+    return (
+      <div className="h-full flex">
+        {/* Left panel: dates and entries list */}
+        <div className="w-1/3 bg-white/80 p-4 border-r overflow-y-auto">
+          {diaryMode === "today" && (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="font-bold text-violet-700">{formatShort(new Date())}</h3>
+                </div>
+                <div className="text-sm text-violet-600">Status: Saved</div>
+              </div>
+
+              <input placeholder="Search date or entry..." value={diarySearch} onChange={e => setDiarySearch(e.target.value)} className="w-full p-2 border rounded mb-3" />
+
+              <div className="flex items-center justify-between mb-3">
+                <button onClick={() => setDiaryMode("pastDatesList")} className="py-2 px-3 rounded bg-violet-100 text-violet-700">Past Entries</button>
+              </div>
+
+              <div className="space-y-2">
+                {todaysEntries.length ? todaysEntries.map(e => (
+                  <div key={e.id} className="p-3 rounded-md bg-gray-50 hover:bg-violet-50 relative group">
+                    <div className="text-sm">{e.finalText}</div>
+                    <div className="text-xs text-gray-500 mt-1">{new Date(e.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                    {/* hover delete if same day and before day end */}
+                    {dateKey(new Date(e.createdAt)) === todayKey && (
+                      <button onClick={() => handleDeleteDiaryEntry(e.id)} className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 text-red-500">Delete</button>
+                    )}
+                  </div>
+                )) : <p className="text-sm text-gray-500 italic">No entries yet today.</p>}
+              </div>
+            </>
+          )}
+
+          {diaryMode === "pastDatesList" && (
+            <>
+              <div className="flex items-center mb-3">
+                <button onClick={backToToday} className="mr-3 text-violet-600">Back</button>
+                <h3 className="font-bold">Past Entries</h3>
+              </div>
+              <div className="space-y-2">
+                {pastDates.length ? pastDates.map(dk => (
+                  <div key={dk} onClick={() => openDateView(dk)} className="p-3 rounded-md bg-gray-50 hover:bg-violet-50 cursor-pointer">
+                    <div className="font-medium">{new Date(dk).toLocaleDateString()}</div>
+                    <div className="text-xs text-gray-500 mt-1">{(diaryEntriesByDate[dk] || []).length} entries</div>
+                  </div>
+                )) : <p className="text-sm text-gray-500 italic">No past dates</p>}
+              </div>
+            </>
+          )}
+
+          {diaryMode === "dateView" && selectedDateView && (
+            <>
+              <div className="flex items-center mb-3">
+                <button onClick={() => setDiaryMode("pastDatesList")} className="mr-3 text-violet-600">Back</button>
+                <h3 className="font-bold">{new Date(selectedDateView).toLocaleDateString()}</h3>
+              </div>
+
+              <div className="space-y-2">
+                <div className="p-3 bg-indigo-50 rounded">
+                  <div className="font-semibold text-indigo-800">Summary</div>
+                  <div className="text-sm text-indigo-900 mt-1">{getDailySummary(selectedDateView) || "No summary available."}</div>
+                </div>
+
+                {(diaryEntriesByDate[selectedDateView] || []).map(e => (
+                  <div className="p-3 rounded-md bg-gray-50" key={e.id}>
+                    <div className="text-sm">{e.finalText}</div>
+                    <div className="text-xs text-gray-500 mt-1">{new Date(e.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right: editor / viewing pane */}
+        <div className="flex-1 p-6 overflow-auto">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <button onClick={() => setCurrentView("explore")} className="text-violet-600">Back</button>
+            </div>
+            <div className="text-sm text-gray-500">Diary Editor</div>
+          </div>
+
+          <h2 className="text-2xl font-bold text-violet-600 mb-1">{diaryMode === "dateView" && selectedDateView ? new Date(selectedDateView).toLocaleDateString() : (diaryMode==="today"? "New Diary Entry": "Diary")}</h2>
+          <p className="text-sm text-gray-500 mb-4">{diaryMode==="today" ? "What's on your mind?" : ""}</p>
+
+          <textarea value={editorText} onChange={(e)=>setEditorText(e.target.value)} className="w-full h-48 p-4 border rounded-lg resize-none" placeholder="Write your entry here..." disabled={grammarProcessing} />
+
+          {/* grammar correction box */}
+          <div className="mt-4 flex gap-3">
+            <button onClick={() => handleDiaryGrammar(editorText)} disabled={grammarProcessing || !editorText.trim()} className={`py-2 px-4 rounded-lg ${grammarProcessing ? "bg-gray-300" : "bg-blue-100 text-blue-800"} font-semibold`}>{grammarProcessing ? "Checking..." : "Correct Grammar"}</button>
+            <button onClick={saveCurrentEntry} disabled={grammarProcessing || !editorText.trim()} className={`py-2 px-4 rounded-lg ${grammarProcessing ? "bg-gray-300" : "bg-violet-500 text-white"} font-bold`}>Save Entry</button>
+          </div>
+
+          {grammarOutput && (
+            <div className="mt-4 p-4 bg-blue-50 rounded border">
+              <h4 className="font-bold text-blue-800">Suggested Correction</h4>
+              <p className="text-blue-900 my-2 whitespace-pre-wrap">{grammarOutput}</p>
+              <div className="flex gap-2">
+                <button onClick={() => { setEditorText(grammarOutput); setGrammarOutput(""); }} className="text-sm text-blue-700">Accept Correction</button>
+                <button onClick={() => setGrammarOutput("")} className="text-sm text-gray-600">Back</button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+    );
+  }
+
+  /* ===========================
+     CalendarView: three months (prev, current, next)
+     - show small colored strips for routines in dates
+     - clicking date shows day's routines with color/time editing
+     =========================== */
+  function CalendarView() {
+    const now = new Date();
+    const currentMonth = new Date(now.getFullYear(), now.getMonth() + calendarOffset, 1);
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() + calendarOffset - 1, 1);
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + calendarOffset + 1, 1);
+
+    const months = [prevMonth, currentMonth, nextMonth];
+
+    const [selectedDay, setSelectedDay] = useState(calendarSelectedDate ? new Date(calendarSelectedDate) : null);
+
+    const withinAllowed = (off) => off >= -1 && off <= 1;
+
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex gap-2">
+            <button onClick={() => { if (withinAllowed(calendarOffset - 1)) setCalendarOffset(o => o - 1); }} className={`px-3 py-2 rounded ${calendarOffset <= -1 ? "bg-gray-200 cursor-not-allowed" : "bg-white shadow"}`}>◀</button>
+            <button onClick={() => { if (withinAllowed(calendarOffset + 1)) setCalendarOffset(o => o + 1); }} className={`px-3 py-2 rounded ${calendarOffset >= 1 ? "bg-gray-200 cursor-not-allowed" : "bg-white shadow"}`}>▶</button>
+          </div>
+          <div className="text-sm text-gray-500">Only previous, current and next month available</div>
+          <div />
+        </div>
+
+        <div className="grid grid-cols-3 gap-4">
+          {months.map((m, idx) => {
+            const year = m.getFullYear();
+            const month = m.getMonth();
+            const weeks = getMonthMatrix(year, month);
+            return (
+              <div key={idx} className="bg-white p-3 rounded shadow">
+                <div className="text-lg font-semibold mb-2">{m.toLocaleString(undefined, { month: "long", year: "numeric" })}</div>
+                <div className="grid grid-cols-7 text-center text-xs text-gray-500">
+                  {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => <div key={d} className="py-1">{d}</div>)}
+                </div>
+                <div className="grid grid-cols-7 gap-1 mt-2 text-sm">
+                  {weeks.flat().map((d, i) => (
+                    <div key={i} className={`h-20 border rounded p-1 ${d ? "bg-white" : "bg-gray-50"}`}>
+                      {d ? (
+                        <>
+                          <div className="text-xs text-gray-600 mb-1">{d.getDate()}</div>
+                          <div className="space-y-1 overflow-hidden">
+                            {routinesForDate(d).slice(0,3).map(rt => (
+                              <div key={rt.id} onClick={() => { setSelectedDay(d); setCalendarSelectedDate(dateKey(d)); }} className="text-xs rounded-sm px-1 py-0.5 truncate cursor-pointer" style={{ backgroundColor: rt.color, color: "#fff" }}>
+                                {rt.name}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Day panel */}
+        {calendarSelectedDate && (
+          <div className="mt-6 bg-white p-4 rounded shadow">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold">Day: {new Date(calendarSelectedDate).toLocaleDateString()}</h3>
+              <button onClick={() => setCalendarSelectedDate(null)} className="text-gray-600">Close</button>
+            </div>
+            <div className="mt-3">
+              {routinesForDate(new Date(calendarSelectedDate)).length ? routinesForDate(new Date(calendarSelectedDate)).map(r => (
+                <div key={r.id} className="p-3 rounded border flex items-center justify-between mb-2">
+                  <div>
+                    <div className="font-semibold">{r.name}</div>
+                    <div className="text-xs text-gray-500">{r.startTime} - {r.endTime}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input type="time" value={r.startTime} onChange={(e) => changeRoutineTime(r.id, e.target.value, r.endTime)} className="p-1 border rounded" />
+                    <input type="color" value={r.color} onChange={(e) => changeRoutineColor(r.id, e.target.value)} title="Change color" />
+                  </div>
+                </div>
+              )) : <p className="text-sm text-gray-500">No routines on this date.</p>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ===========================
+     Top-level render
+     - Sidebar right. When closed, show toggle at top-right of main panel.
+     =========================== */
+  return (
+    <div className="flex h-screen w-full font-sans bg-gradient-to-br from-violet-50 to-fuchsia-50 antialiased overflow-hidden">
+      <div className="flex-1 min-w-0">
+        <MainPanel />
+      </div>
+
+      <div className={`transition-all duration-300 ${isSidebarOpen ? "w-80" : "w-0"} flex-shrink-0 overflow-hidden border-l`}>
+        <div className="w-80 h-full">
+          <Sidebar />
+        </div>
+      </div>
+
+      {!isSidebarOpen && (
+        <div className="fixed right-4 top-4 z-50">
+          <button onClick={() => setIsSidebarOpen(true)} className="p-3 rounded-full bg-violet-500 text-white shadow-lg">
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
