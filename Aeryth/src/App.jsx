@@ -366,56 +366,160 @@ export default function App() {
     );
   }
 
-  function CalendarView() {
+ function CalendarView({ updateRoutine }) {
+    // Assuming calendarViewMonth, setCalendarViewMonth, calendarDate, setCalendarDate,
+    // calendarEvents, iso, fmtShort, and a state/function for the routine's days array
+    // are available in the component's scope.
+    
     const onActiveStartDateChange = ({ activeStartDate }) => setCalendarViewMonth(activeStartDate);
+    
+    // --- Month Limiting Logic ---
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    
+    // Check if the displayed month is the previous month or earlier
+    const isPrevDisabled = calendarViewMonth.getFullYear() < currentYear || 
+                           (calendarViewMonth.getFullYear() === currentYear && calendarViewMonth.getMonth() <= currentMonth - 1);
+                           
+    // Check if the displayed month is the next month or later
+    const isNextDisabled = calendarViewMonth.getFullYear() > currentYear || 
+                           (calendarViewMonth.getFullYear() === currentYear && calendarViewMonth.getMonth() >= currentMonth + 1);
+                           
+    const availableDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    // Function to handle toggling a day in a routine's days array
+    // This assumes updateRoutine can handle merging/setting the new days array
+    const toggleDay = (routineId, currentDays, day) => {
+        const newDays = currentDays.includes(day)
+            ? currentDays.filter(d => d !== day)
+            : [...currentDays, day];
+        
+        // This is a placeholder for your actual update logic
+        // It sends the entire updated array of days back to the routine.
+        updateRoutine(routineId, { days: newDays }); 
+    };
+    
     return (
-      <div className="flex-1 h-full p-6 overflow-auto">
-        <div className="max-w-4xl mx-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold text-violet-700">Calendar</h2>
-            <div className="flex gap-2">
-              <button onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()-1,1))} className="px-3 py-2 rounded bg-gray-100">Prev</button>
-              <button onClick={() => setCalendarViewMonth(new Date())} className="px-3 py-2 rounded bg-gray-100">Today</button>
-              <button onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()+1,1))} className="px-3 py-2 rounded bg-gray-100">Next</button>
-            </div>
-          </div>
-
-          <Calendar onChange={setCalendarDate} value={calendarDate} activeStartDate={calendarViewMonth} onActiveStartDateChange={onActiveStartDateChange}
-            tileContent={({ date }) => {
-              const isoDay = iso(date);
-              const ev = calendarEvents[isoDay] || [];
-              if (!ev.length) return null;
-              return <div className="mt-1 space-y-0">{ev.slice(0,3).map((e, i) => <div key={i} className={`text-[10px] truncate rounded-sm px-1 ${e.color==="violet"?"bg-violet-500 text-white": e.color==="green"?"bg-green-400 text-white": e.color==="rose"?"bg-rose-400 text-white":"bg-amber-400 text-black"}`}>{e.name}</div>)}</div>;
-            }}
-          />
-
-          <div className="mt-4 bg-white p-4 rounded shadow">
-            <h3 className="font-semibold">Events on {fmtShort(new Date(calendarDate))}</h3>
-            <div className="mt-2">
-              {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => (
-                <div key={idx} className="flex items-center justify-between p-2 border rounded mb-1">
-                  <div>
-                    <div className="font-medium">{ev.name}</div>
-                    <div className="text-xs text-gray-500">{ev.time}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input type="time" value={ev.time} onChange={(e)=> updateRoutine(ev.routineId, { startTime: e.target.value })} className="p-1 border rounded" />
-                    <div className="flex gap-1">
-                      <button onClick={()=>updateRoutine(ev.routineId, { color: "violet" })} className="w-4 h-4 rounded-sm bg-violet-500" />
-                      <button onClick={()=>updateRoutine(ev.routineId, { color: "green" })} className="w-4 h-4 rounded-sm bg-green-400" />
-                      <button onClick={()=>updateRoutine(ev.routineId, { color: "rose" })} className="w-4 h-4 rounded-sm bg-rose-400" />
-                      <button onClick={()=>updateRoutine(ev.routineId, { color: "amber" })} className="w-4 h-4 rounded-sm bg-amber-400" />
-                    </div>
-                  </div>
+        <div className="flex-1 h-full p-6 overflow-auto">
+            <div className="max-w-4xl mx-auto">
+                {/* Header Section */}
+                <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-2xl font-bold text-violet-700">Calendar</h2>
                 </div>
-              ))}
-              {!(calendarEvents[iso(calendarDate)] || []).length && <div className="text-sm text-gray-500">No routines.</div>}
+
+                {/* Calendar, Centered and Squared */}
+                <div className="mx-auto w-full max-w-[500px] h-[500px]">
+                    
+                    {/* Month Navigation Buttons - Now above the calendar */}
+                    <div className="flex gap-2 justify-center mb-4">
+                        <button 
+                            onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()-1, 1))} 
+                            className={`px-3 py-2 rounded font-semibold transition ${isPrevDisabled ? "bg-gray-300 text-gray-500 cursor-not-allowed" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                            disabled={isPrevDisabled}
+                        >
+                            Prev
+                        </button>
+                        <button 
+                            onClick={() => setCalendarViewMonth(new Date())} 
+                            className="px-3 py-2 rounded bg-violet-500 text-white font-semibold hover:bg-violet-600 transition"
+                        >
+                            Today
+                        </button>
+                        <button 
+                            onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()+1, 1))} 
+                            className={`px-3 py-2 rounded font-semibold transition ${isNextDisabled ? "bg-gray-300 text-gray-500 cursor-not-allowed" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                            disabled={isNextDisabled}
+                        >
+                            Next
+                        </button>
+                    </div>
+
+                    <Calendar 
+                        onChange={setCalendarDate} 
+                        value={calendarDate} 
+                        activeStartDate={calendarViewMonth} 
+                        onActiveStartDateChange={onActiveStartDateChange}
+                        
+                        // --- UI Customization (No arrows, square shape) ---
+                        // Note: The square shape is achieved by setting equal width/height on the parent div above
+                        className="w-full h-full border border-gray-200 rounded-lg shadow-lg"
+                        prevLabel={null} // Removes previous month arrow
+                        nextLabel={null} // Removes next month arrow
+                        prev2Label={null} // Removes previous year arrow
+                        next2Label={null} // Removes next year arrow
+                        
+                        tileContent={({ date }) => {
+                            const isoDay = iso(date);
+                            const ev = calendarEvents[isoDay] || [];
+                            if (!ev.length) return null;
+                            return <div className="mt-1 space-y-0 ">{ev.slice(0,3).map((e, i) => <div key={i} className={`text-[10px] truncate rounded-sm px-1 ${e.color==="violet"?"bg-violet-500 text-white": e.color==="green"?"bg-green-400 text-white": e.color==="rose"?"bg-rose-400 text-white":"bg-amber-400 text-black"}`}>{e.name}</div>)}</div>;
+                        }}
+                    />
+                </div>
+
+                {/* Events List Section */}
+                <div className="mt-8 bg-white p-4 rounded-xl shadow">
+                    <h3 className="font-semibold text-lg text-gray-800">Events on {fmtShort(new Date(calendarDate))}</h3>
+                    <div className="mt-3 space-y-3">
+                        {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => (
+                            // Assuming ev object now includes 'days' property (e.g., ev.days = ['Mon', 'Wed'])
+                            <div key={idx} className="p-3 border border-gray-100 rounded-lg shadow-sm">
+                                <div className="font-medium text-lg mb-2">{ev.name}</div>
+                                
+                                <div className="flex flex-wrap items-center gap-4">
+                                    
+                                    {/* 1. Days Selector (New Feature) */}
+                                    <div>
+                                        <label className="text-sm font-medium text-gray-600 block mb-1">Repeat on</label>
+                                        <div className="flex gap-1">
+                                            {availableDays.map(d => (
+                                                <button 
+                                                    key={d} 
+                                                    type="button" 
+                                                    onClick={() => toggleDay(ev.routineId, ev.days || [], d)} // Pass routineId and current days
+                                                    className={`w-8 h-8 rounded-full text-xs font-bold transition flex items-center justify-center 
+                                                                ${(ev.days || []).includes(d) 
+                                                                    ? "bg-violet-500 text-white shadow" 
+                                                                    : "bg-violet-100 text-violet-500 hover:bg-violet-200"}`}
+                                                >
+                                                    {d[0]}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* 2. Time Input */}
+                                    <div>
+                                        <label className="text-sm font-medium text-gray-600 block mb-1">Time</label>
+                                        <input 
+                                            type="time" 
+                                            value={ev.time} 
+                                            onChange={(e)=> updateRoutine(ev.routineId, { time: e.target.value })} 
+                                            className="p-1 border rounded-lg text-sm" 
+                                        />
+                                    </div>
+                                    
+                                    {/* 3. Color Picker */}
+                                    <div>
+                                        <label className="text-sm font-medium text-gray-600 block mb-1">Color</label>
+                                        <div className="flex gap-1">
+                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "violet" })} className="w-5 h-5 rounded-full bg-violet-500 border-2 border-transparent hover:border-violet-700 transition" />
+                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "green" })} className="w-5 h-5 rounded-full bg-green-400 border-2 border-transparent hover:border-green-600 transition" />
+                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "rose" })} className="w-5 h-5 rounded-full bg-rose-400 border-2 border-transparent hover:border-rose-600 transition" />
+                                            <button onClick={()=>updateRoutine(ev.routineId, { color: "amber" })} className="w-5 h-5 rounded-full bg-amber-400 border-2 border-transparent hover:border-amber-600 transition" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                        {!(calendarEvents[iso(calendarDate)] || []).length && <div className="text-sm text-gray-500 p-2">No routines scheduled for this day.</div>}
+                    </div>
+                </div>
             </div>
-          </div>
         </div>
-      </div>
     );
-  }
+}
 
   function DiaryView() {
     const now = new Date();
