@@ -84,6 +84,11 @@ export default function App() {
   /* calendar */
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [calendarViewMonth, setCalendarViewMonth] = useState(new Date());
+  
+  useEffect(() => {
+    const saved = localStorage.getItem("calendarEvents");
+    if (saved) setCalendarEvents(JSON.parse(saved));
+  }, []);
 
   /* misc */
   const chatEndRef = useRef(null);
@@ -102,18 +107,7 @@ export default function App() {
     return id;
   };
   const updateRoutine = (id, patch) => setRoutines(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
-  const updateCalendar = (routineId, updates) => {
-  setCalendarEvents((prev) => {
-    const newEvents = { ...prev };
-    for (const date in newEvents) {
-      newEvents[date] = newEvents[date].map((ev) =>
-        ev.routineId === routineId ? { ...ev, ...updates } : ev
-      );
-    }
-    localStorage.setItem("calendarEvents", JSON.stringify(newEvents));
-    return newEvents;
-  });
-};
+  
   const removeRoutine = (id) => {
     setRoutines(prev => prev.filter(r => r.id !== id));
     setStickies(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -378,211 +372,313 @@ export default function App() {
     );
   }
 
- function CalendarView({ updateRoutine }) {
-    // Assuming calendarViewMonth, setCalendarViewMonth, calendarDate, setCalendarDate,
-    // calendarEvents, iso, fmtShort, and a state/function for the routine's days array
-    // are available in the component's scope.
-    
-    const onActiveStartDateChange = ({ activeStartDate }) => setCalendarViewMonth(activeStartDate);
-    
-    // --- Month Limiting Logic ---
-    const today = new Date();
-    const currentMonth = today.getMonth();
-    const currentYear = today.getFullYear();
-    
-    // Check if the displayed month is the previous month or earlier
-    const isPrevDisabled = calendarViewMonth.getFullYear() < currentYear || 
-                           (calendarViewMonth.getFullYear() === currentYear && calendarViewMonth.getMonth() <= currentMonth - 1);
-                           
-    // Check if the displayed month is the next month or later
-    const isNextDisabled = calendarViewMonth.getFullYear() > currentYear || 
-                           (calendarViewMonth.getFullYear() === currentYear && calendarViewMonth.getMonth() >= currentMonth + 1);
-                           
-    const availableDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+ function CalendarView() {
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [calendarViewMonth, setCalendarViewMonth] = useState(new Date());
+  const [editBuffer, setEditBuffer] = useState({}); // Local edits before saving
 
-    // Function to handle toggling a day in a routine's days array
-    // This assumes updateRoutine can handle merging/setting the new days array
-    const toggleDay = (routineId, currentDays, day) => {
-        const newDays = currentDays.includes(day)
-            ? currentDays.filter(d => d !== day)
-            : [...currentDays, day];
-        
-        // This is a placeholder for your actual update logic
-        // It sends the entire updated array of days back to the routine.
-        updateRoutine(routineId, { days: newDays }); 
+  const today = new Date();
+  const currentMonth = today.getMonth();
+  const currentYear = today.getFullYear();
+
+  const isPrevDisabled =
+    calendarViewMonth.getFullYear() < currentYear ||
+    (calendarViewMonth.getFullYear() === currentYear &&
+      calendarViewMonth.getMonth() <= currentMonth - 1);
+
+  const isNextDisabled =
+    calendarViewMonth.getFullYear() > currentYear ||
+    (calendarViewMonth.getFullYear() === currentYear &&
+      calendarViewMonth.getMonth() >= currentMonth + 1);
+
+  const onActiveStartDateChange = ({ activeStartDate }) =>
+    setCalendarViewMonth(activeStartDate);
+
+  // ---- Build Events Map ----
+  const calendarEvents = (() => {
+    const events = {};
+    const getRangeDates = (base) => {
+      const arr = [];
+      const start = new Date(base.getFullYear(), base.getMonth() - 1, 1);
+      const end = new Date(base.getFullYear(), base.getMonth() + 2, 0);
+      for (let d = start; d <= end; d.setDate(d.getDate() + 1))
+        arr.push(new Date(d));
+      return arr;
     };
-    
-    return (
-        <div className="flex-1 h-full p-6 overflow-auto">
-            <div className="max-w-4xl mx-auto">
-                {/* Header Section */}
-                <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-2xl font-bold text-violet-700">Calendar</h2>
-                </div>
+    const daysMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-                {/* Calendar, Centered and Squared */}
-                <div className="mx-auto w-full max-w-[500px] h-[500px]">
-                    
-                    {/* Month Navigation Buttons - Now above the calendar */}
-                    <div className="flex gap-2 justify-center mb-4">
-                        <button 
-                            onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()-1, 1))} 
-                            className={`px-3 py-2 rounded font-semibold transition ${isPrevDisabled ? "bg-gray-300 text-gray-500 cursor-not-allowed" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
-                            disabled={isPrevDisabled}
-                        >
-                            Prev
-                        </button>
-                        <button 
-                            onClick={() => setCalendarViewMonth(new Date())} 
-                            className="px-3 py-2 rounded bg-violet-500 text-white font-semibold hover:bg-violet-600 transition"
-                        >
-                            Today
-                        </button>
-                        <button 
-                            onClick={() => setCalendarViewMonth(new Date(calendarViewMonth.getFullYear(), calendarViewMonth.getMonth()+1, 1))} 
-                            className={`px-3 py-2 rounded font-semibold transition ${isNextDisabled ? "bg-gray-300 text-gray-500 cursor-not-allowed" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
-                            disabled={isNextDisabled}
-                        >
-                            Next
-                        </button>
-                    </div>
-
-                    <Calendar 
-                        onChange={setCalendarDate} 
-                        value={calendarDate} 
-                        activeStartDate={calendarViewMonth} 
-                        onActiveStartDateChange={onActiveStartDateChange}
-                        
-                        // --- UI Customization (No arrows, square shape) ---
-                        // Note: The square shape is achieved by setting equal width/height on the parent div above
-                        className="w-full h-full border border-gray-200 rounded-lg shadow-lg"
-                        prevLabel={null} // Removes previous month arrow
-                        nextLabel={null} // Removes next month arrow
-                        prev2Label={null} // Removes previous year arrow
-                        next2Label={null} // Removes next year arrow
-                        
-                        tileContent={({ date }) => {
-                            const isoDay = iso(date);
-                            const ev = calendarEvents[isoDay] || [];
-                            if (!ev.length) return null;
-                            return <div className="mt-1 space-y-0 ">{ev.slice(0,3).map((e, i) => <div key={i} className={`text-[10px] truncate rounded-sm px-1 ${e.color==="violet"?"bg-violet-500 text-white": e.color==="green"?"bg-green-400 text-white": e.color==="rose"?"bg-rose-400 text-white":"bg-amber-400 text-black"}`}>{e.name}</div>)}</div>;
-                        }}
-                    />
-                </div>
-
-                {/* Events Section */}
-                <div className="mt-8 bg-white p-4 rounded-xl shadow">
-                    <h3 className="font-semibold text-lg text-gray-800">
-                        Events on {fmtShort(new Date(calendarDate))}
-                    </h3>
-                    <div className="mt-3 space-y-3">
-                        {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => {
-                            const [tempDays, setTempDays] = React.useState(ev.days || []);
-                            const [tempTime, setTempTime] = React.useState(ev.time || "");
-                            const [isChanged, setIsChanged] = React.useState(false);
-
-                            const toggleDayLocal = (day) => {
-                                const newDays = tempDays.includes(day)
-                                    ? tempDays.filter((d) => d !== day)
-                                    : [...tempDays, day];
-                                setTempDays(newDays);
-                                setIsChanged(true);
-                            };
-
-                            const saveChanges = () => {
-                                updateRoutine(ev.routineId, { days: tempDays, time: tempTime });
-                                setIsChanged(false);
-                            };
-
-                            return (
-                                <div
-                                    key={idx}
-                                    className="p-3 border border-gray-100 rounded-lg shadow-sm flex flex-col gap-3"
-                                >
-                                    <div className="flex justify-between items-center">
-                                        <div className="font-medium text-lg">{ev.name}</div>
-                                        {isChanged && (
-                                            <button
-                                                onClick={saveChanges}
-                                                className="px-3 py-1 bg-violet-500 text-white text-sm font-semibold rounded hover:bg-violet-600 transition"
-                                            >
-                                                Save
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    <div className="flex flex-wrap items-center gap-4">
-                                        {/* Days Selector */}
-                                        <div>
-                                            <label className="text-sm font-medium text-gray-600 block mb-1">
-                                                Repeat on
-                                            </label>
-                                            <div className="flex gap-1">
-                                                {availableDays.map((d) => (
-                                                    <button
-                                                        key={d}
-                                                        type="button"
-                                                        onClick={() => toggleDayLocal(d)}
-                                                        className={`w-8 h-8 rounded-full text-xs font-bold transition flex items-center justify-center ${
-                                                            tempDays.includes(d)
-                                                                ? "bg-violet-500 text-white shadow"
-                                                                : "bg-violet-100 text-violet-500 hover:bg-violet-200"
-                                                        }`}
-                                                    >
-                                                        {d[0]}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        {/* Time Input */}
-                                        <div>
-                                            <label className="text-sm font-medium text-gray-600 block mb-1">Time</label>
-                                            <input
-                                                type="time"
-                                                value={tempTime}
-                                                onChange={(e) => {
-                                                    setTempTime(e.target.value);
-                                                    setIsChanged(true);
-                                                }}
-                                                className="p-1 border rounded-lg text-sm"
-                                            />
-                                        </div>
-
-                                        {/* Color Picker */}
-                                        <div>
-                                            <label className="text-sm font-medium text-gray-600 block mb-1">Color</label>
-                                            <div className="flex gap-1">
-                                                {["violet", "green", "rose", "amber"].map((c) => (
-                                                    <button
-                                                        key={c}
-                                                        onClick={() => updateRoutine(ev.routineId, { color: c })}
-                                                        className={`w-5 h-5 rounded-full border-2 border-transparent hover:border-violet-700 transition ${
-                                                            c === "violet"
-                                                                ? "bg-violet-500"
-                                                                : c === "green"
-                                                                ? "bg-green-400"
-                                                                : c === "rose"
-                                                                ? "bg-rose-400"
-                                                                : "bg-amber-400"
-                                                        }`}
-                                                    />
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                        {!(calendarEvents[iso(calendarDate)] || []).length && (
-                            <div className="text-sm text-gray-500 p-2">No routines scheduled for this day.</div>
-                        )}
-                    </div>
-                </div>
-            </div>
-        </div>
+    getRangeDates(calendarViewMonth).forEach(
+      (d) => (events[iso(d)] = [])
     );
+
+    routines.forEach((r) => {
+      if (!r.days || !r.startTime) return;
+      Object.keys(events).forEach((dayIso) => {
+        const d = new Date(dayIso + "T00:00:00");
+        if (r.days.some((dd) => daysMap[dd] === d.getDay())) {
+          events[dayIso].push({
+            routineId: r.id,
+            name: r.name || "Routine",
+            color: r.color || "violet",
+            time: r.startTime,
+            days: r.days,
+          });
+        }
+      });
+    });
+    Object.keys(events).forEach((k) =>
+      events[k].sort((a, b) => (a.time || "") > (b.time || "") ? 1 : -1)
+    );
+    return events;
+  })();
+
+  const availableDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  // --- Handle Local Edits ---
+  const handleLocalChange = (id, field, value) => {
+    setEditBuffer((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), [field]: value },
+    }));
+  };
+
+  const saveChanges = (id) => {
+    const patch = editBuffer[id];
+    if (!patch) return;
+    updateRoutine(id, patch);
+    setEditBuffer((prev) => {
+      const newBuf = { ...prev };
+      delete newBuf[id];
+      return newBuf;
+    });
+  };
+
+  const hasChanges = (id) => !!editBuffer[id];
+
+  return (
+    <div className="flex-1 h-full p-6 overflow-auto">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-violet-700">Calendar</h2>
+        </div>
+
+        {/* Month Navigation */}
+        <div className="flex gap-2 justify-center mb-4">
+          <button
+            onClick={() =>
+              setCalendarViewMonth(
+                new Date(
+                  calendarViewMonth.getFullYear(),
+                  calendarViewMonth.getMonth() - 1,
+                  1
+                )
+              )
+            }
+            className={`px-3 py-2 rounded font-semibold transition ${
+              isPrevDisabled
+                ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+            disabled={isPrevDisabled}
+          >
+            Prev
+          </button>
+          <button
+            onClick={() => setCalendarViewMonth(new Date())}
+            className="px-3 py-2 rounded bg-violet-500 text-white font-semibold hover:bg-violet-600 transition"
+          >
+            Today
+          </button>
+          <button
+            onClick={() =>
+              setCalendarViewMonth(
+                new Date(
+                  calendarViewMonth.getFullYear(),
+                  calendarViewMonth.getMonth() + 1,
+                  1
+                )
+              )
+            }
+            className={`px-3 py-2 rounded font-semibold transition ${
+              isNextDisabled
+                ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+            disabled={isNextDisabled}
+          >
+            Next
+          </button>
+        </div>
+
+        {/* Calendar */}
+        <div className="mx-auto w-full h-[550px] flex justify-center">
+          <Calendar
+            onChange={setCalendarDate}
+            value={calendarDate}
+            activeStartDate={calendarViewMonth}
+            onActiveStartDateChange={onActiveStartDateChange}
+            className="w-full h-full border border-gray-200 rounded-lg shadow-lg"
+            prevLabel={null}
+            nextLabel={null}
+            prev2Label={null}
+            next2Label={null}
+            tileContent={({ date }) => {
+              const isoDay = iso(date);
+              const ev = calendarEvents[isoDay] || [];
+              if (!ev.length) return null;
+              const shown = ev.slice(0, 2);
+              const remaining = ev.length - shown.length;
+              return (
+                <div className="mt-1 space-y-0">
+                  {shown.map((e, i) => (
+                    <div
+                      key={i}
+                      className={`text-[10px] truncate rounded-sm px-1 ${
+                        e.color === "violet"
+                          ? "bg-violet-500 text-white"
+                          : e.color === "green"
+                          ? "bg-green-400 text-white"
+                          : e.color === "rose"
+                          ? "bg-rose-400 text-white"
+                          : "bg-amber-400 text-black"
+                      }`}
+                    >
+                      {e.name}
+                    </div>
+                  ))}
+                  {remaining > 0 && (
+                    <div className="text-[9px] text-gray-500 font-medium">
+                      +{remaining} more
+                    </div>
+                  )}
+                </div>
+              );
+            }}
+          />
+        </div>
+
+        {/* Events Section */}
+        <div className="mt-8 bg-white p-4 rounded-xl shadow">
+          <h3 className="font-semibold text-lg text-gray-800">
+            Events on {fmtShort(new Date(calendarDate))}
+          </h3>
+          <div className="mt-3 space-y-3">
+            {(calendarEvents[iso(calendarDate)] || []).map((ev, idx) => {
+              const local = editBuffer[ev.routineId] || {};
+              const currentTime = local.startTime ?? ev.time ?? "";
+              const currentDays = local.days ?? ev.days ?? [];
+
+              const toggleDayLocal = (day) => {
+                const newDays = currentDays.includes(day)
+                  ? currentDays.filter((d) => d !== day)
+                  : [...currentDays, day];
+                handleLocalChange(ev.routineId, "days", newDays);
+              };
+
+              return (
+                <div
+                  key={idx}
+                  className="p-3 border border-gray-100 rounded-lg shadow-sm flex flex-col gap-3"
+                >
+                  <div className="flex justify-between items-center">
+                    <div className="font-medium text-lg">{ev.name}</div>
+                    {hasChanges(ev.routineId) && (
+                      <button
+                        onClick={() => saveChanges(ev.routineId)}
+                        className="px-3 py-1 bg-violet-500 text-white text-sm font-semibold rounded hover:bg-violet-600 transition"
+                      >
+                        Save
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4">
+                    {/* Days Selector */}
+                    <div>
+                      <label className="text-sm font-medium text-gray-600 block mb-1">
+                        Repeat on
+                      </label>
+                      <div className="flex gap-1">
+                        {availableDays.map((d) => (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => toggleDayLocal(d)}
+                            className={`w-8 h-8 rounded-full text-xs font-bold transition flex items-center justify-center ${
+                              currentDays.includes(d)
+                                ? "bg-violet-500 text-white shadow"
+                                : "bg-violet-100 text-violet-500 hover:bg-violet-200"
+                            }`}
+                          >
+                            {d[0]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Time Input */}
+                    <div>
+                      <label className="text-sm font-medium text-gray-600 block mb-1">
+                        Time
+                      </label>
+                      <input
+                        type="time"
+                        value={currentTime}
+                        onChange={(e) =>
+                          handleLocalChange(
+                            ev.routineId,
+                            "startTime",
+                            e.target.value
+                          )
+                        }
+                        className="p-1 border rounded-lg text-sm"
+                      />
+                    </div>
+
+                    {/* Color Picker */}
+                    <div>
+                      <label className="text-sm font-medium text-gray-600 block mb-1">
+                        Color
+                      </label>
+                      <div className="flex gap-1">
+                        {["violet", "green", "rose", "amber"].map((c) => (
+                          <button
+                            key={c}
+                            onClick={() =>
+                              handleLocalChange(ev.routineId, "color", c)
+                            }
+                            className={`w-5 h-5 rounded-full border-2 border-transparent hover:border-violet-700 transition ${
+                              c === "violet"
+                                ? "bg-violet-500"
+                                : c === "green"
+                                ? "bg-green-400"
+                                : c === "rose"
+                                ? "bg-rose-400"
+                                : "bg-amber-400"
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {!(calendarEvents[iso(calendarDate)] || []).length && (
+              <div className="text-sm text-gray-500 p-2">
+                No routines scheduled for this day.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
+
+
 
   function DiaryView() {
     const now = new Date();
@@ -817,7 +913,7 @@ export default function App() {
                   {upcoming.length ? upcoming.slice(0,1).map(r => (
                     <div key={r.id} className="p-2 bg-violet-50 rounded-xl border-l-2 border-violet-400">
                       <div className="font-bold text-violet-800 truncate">{r.name}</div>
-                      <div className="text-xs text-violet-600 mt-1">{r.startTime} - {r.endTime}</div>
+                      <div className="text-xs text-violet-600 mt-1">At {r.startTime}</div>
                     </div>
                   )) : <p className="text-sm text-gray-500 italic mt-2">No routines</p>}
                 </div>
