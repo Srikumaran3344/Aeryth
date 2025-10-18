@@ -1,5 +1,5 @@
 # Aeryth
-Chrome Built-in AI Challenge-2025, a anti-procrastination companion
+Chrome Built-in AI Challenge-2025, an anti-procrastination companion
 
 
 I have joined chrome AI challenge 2025 to build a web applivcation using the chrome extensions and API (checek the rules on site)
