@@ -805,24 +805,22 @@ export default function App() {
    ----------------------- */
   function DiaryView() {
     const today = new Date();
-    const todayMonthKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}`;
+    const todayMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
     const todayKey = iso(today);
 
-    // UI state specific to Diary
+    // UI state
     const [entryText, setEntryText] = useState("");
-    const [showPast, setShowPast] = useState(false); // false = current day view; true = past entries view
-    const [selectedDate, setSelectedDate] = useState(null); // { monthKey, dayKey } when viewing a day
+    const [showPast, setShowPast] = useState(false);
+    const [selectedDate, setSelectedDate] = useState(null);
     const [searchTerm, setSearchTerm] = useState("");
-    const [grammarPreview, setGrammarPreview] = useState(null); // { correctedText } or null
+    const [grammarPreview, setGrammarPreview] = useState(null);
     const [isPreviewVisible, setIsPreviewVisible] = useState(false);
-    const [diarySearchResults, setDiarySearchResults] = useState([]); // search results: {monthKey, dayKey, entries}
+    const [diarySearchResults, setDiarySearchResults] = useState([]);
     const [highlightTerm, setHighlightTerm] = useState("");
 
-    // For the left pane listing today's entries (dedupe handled in addDiaryEntry)
     const thisMonthObj = diary[todayMonthKey] || {};
     const todaysEntries = (thisMonthObj && thisMonthObj[todayKey]) || [];
 
-    // Open a fresh new entry editor
     const openNewEntry = () => {
       setShowPast(false);
       setSelectedDate(null);
@@ -832,7 +830,6 @@ export default function App() {
       setHighlightTerm("");
     };
 
-    // Save handler (new entry)
     const handleSave = () => {
       if (!entryText.trim()) return;
       addDiaryEntry(entryText.trim());
@@ -841,14 +838,12 @@ export default function App() {
       setIsPreviewVisible(false);
     };
 
-    // Grammar correction: use gemini if available else local
     const handleGrammarCheck = async () => {
       if (!entryText.trim()) return alert("Write something first");
       setIsAILoading(true);
       try {
         let corrected;
         if (availableModel && availableModel()) {
-          // use your existing guarded wrapper
           corrected = await callGeminiDiary(entryText);
         } else {
           corrected = localGrammarCorrect(entryText);
@@ -878,7 +873,7 @@ export default function App() {
       setGrammarPreview(null);
     };
 
-    // Build list of past months/days for Past Entries view
+    // build list of months
     const allDateKeys = [];
     Object.keys(diary).forEach(mk => {
       Object.keys(diary[mk]).forEach(dk => {
@@ -886,34 +881,30 @@ export default function App() {
         allDateKeys.push({ monthKey: mk, dayKey: dk });
       });
     });
-    allDateKeys.sort((a,b) => b.dayKey.localeCompare(a.dayKey)); // newest first
+    allDateKeys.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
 
-    // Group dates into months map for Past Entries listing
     const monthsMap = {};
     allDateKeys.forEach(({ monthKey, dayKey }) => {
       monthsMap[monthKey] = monthsMap[monthKey] || { days: [] };
       monthsMap[monthKey].days.push(dayKey);
     });
 
-    // auto-generate monthly summaries for past months
     useEffect(() => {
       const now = new Date();
       Object.keys(monthsMap).forEach(mk => {
         const [y, m] = mk.split("-").map(Number);
-        if (y < now.getFullYear() || (y === now.getFullYear() && m < (now.getMonth()+1))) {
+        if (y < now.getFullYear() || (y === now.getFullYear() && m < now.getMonth() + 1)) {
           generateMonthlySummaryIfMissing(mk);
         }
       });
     }, [diary]); // eslint-disable-line
 
-    // When a past date is clicked, open it
     const openPastDate = (monthKey, dayKey) => {
       setSelectedDate({ monthKey, dayKey });
       setShowPast(true);
-      setHighlightTerm(searchTerm.trim().toLowerCase());
+      setHighlightTerm(searchTerm.trim());
     };
 
-    // Back navigation
     const handleBack = () => {
       if (selectedDate) {
         setSelectedDate(null);
@@ -925,11 +916,14 @@ export default function App() {
       }
     };
 
-    // Search logic: search across diary and create `diarySearchResults`
+    // Integrated search logic (from old version)
     const runDiarySearch = (term) => {
       const t = term.trim().toLowerCase();
       setHighlightTerm(t);
-      if (!t) { setDiarySearchResults([]); return; }
+      if (!t) {
+        setDiarySearchResults([]);
+        return;
+      }
 
       const results = [];
       Object.keys(diary).forEach(mk => {
@@ -945,31 +939,34 @@ export default function App() {
             const timeStr = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
             return (e.text || "").toLowerCase().includes(t) || timeStr.includes(t);
           });
-          if (matching.length) results.push({ monthKey: mk, dayKey: dk, entries: matching });
+          if (matching.length) {
+            results.push({ monthKey: mk, dayKey: dk, entries: matching });
+          }
         });
       });
       setDiarySearchResults(results);
     };
 
     useEffect(() => {
-      const id = setTimeout(() => runDiarySearch(searchTerm), 220);
-      return () => clearTimeout(id);
+      const handler = setTimeout(() => runDiarySearch(searchTerm), 250);
+      return () => clearTimeout(handler);
     }, [searchTerm, diary]);
 
-    // helper to check whether a day is editable (only today editable)
     const canEditDay = (dayKey) => dayKey === todayKey;
 
-    // helper to escape regex
     const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     const renderEntryTextWithHighlight = (text, term) => {
       if (!term) return text;
       const re = new RegExp(`(${escapeRegExp(term)})`, "ig");
       const parts = text.split(re);
-      return parts.map((p, i) => re.test(p) ? <span key={i} className="bg-purple-200 rounded px-1">{p}</span> : <span key={i}>{p}</span>);
+      return parts.map((p, i) =>
+        re.test(p)
+          ? <span key={i} className="bg-purple-200 rounded px-1">{p}</span>
+          : <span key={i}>{p}</span>
+      );
     };
 
-    // Edit a single existing entry (only for today's entries)
     const handleEditEntry = (monthKey, dayKey, entryId, newText) => {
       if (!canEditDay(dayKey)) return;
       updateDiaryEntry(monthKey, dayKey, entryId, newText);
@@ -978,6 +975,7 @@ export default function App() {
     return (
       <div className="flex-1 h-full p-6 overflow-auto">
         <div className="max-w-4xl mx-auto flex">
+          {/* Left Pane */}
           <div className="w-1/3 bg-white/80 p-4 border-r h-[80vh] overflow-auto">
             <div className="flex items-center justify-between mb-3">
               <div><h3 className="font-bold text-violet-700">{fmtShort(today)}</h3></div>
@@ -986,7 +984,7 @@ export default function App() {
             <div className="mb-3">
               <button onClick={openNewEntry} className="w-full py-2 rounded bg-violet-500 text-white mb-2">New entry</button>
               <div className="flex gap-2">
-                <input value={searchTerm} onChange={(e)=>setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
+                <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
                 <button onClick={() => { setShowPast(s => !s); setSelectedDate(null); }} className="px-3 py-2 rounded bg-gray-100">{showPast ? "Back" : "Past Entries"}</button>
               </div>
             </div>
@@ -996,9 +994,7 @@ export default function App() {
                 {todaysEntries.map(e => (
                   <div key={e.id} className="p-3 bg-white rounded shadow group relative cursor-pointer" onClick={() => { setSelectedDate({ monthKey: todayMonthKey, dayKey: todayKey }); }}>
                     <div className="text-sm">{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
-                    <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-
-                    {/* delete button bottom-right on hover */}
+                    <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                     <div className="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100">
                       <button onClick={(ev) => { ev.stopPropagation(); if (confirm("Delete entry?")) deleteDiaryEntry(todayMonthKey, todayKey, e.id); }} className="text-red-500">Delete</button>
                     </div>
@@ -1008,7 +1004,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Past entries / months listing */}
+            {/* Past Entries View */}
             {showPast && (
               <div className="space-y-3">
                 {searchTerm ? (
@@ -1048,13 +1044,13 @@ export default function App() {
             )}
           </div>
 
+          {/* Right Pane */}
           <div className="flex-1 p-6 h-[80vh] overflow-auto">
             {!selectedDate && (
               <>
                 <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(today)}</h2>
                 <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
-
-                <textarea value={entryText} onChange={e=>setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
+                <textarea value={entryText} onChange={e => setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
 
                 {isPreviewVisible && grammarPreview && (
                   <div className="mt-4 bg-white border rounded p-4 shadow">
@@ -1083,26 +1079,32 @@ export default function App() {
 
                 <div className="bg-white p-4 rounded shadow mb-3">
                   <div className="font-bold">Summary (auto)</div>
-                  <div className="text-sm text-gray-600 mt-2">{diary[selectedDate.monthKey]?.monthlySummary || "[Monthly/daily summary will appear here]"}</div>
+                  <div className="text-sm text-gray-600 mt-2">
+                    {diary[selectedDate.monthKey]?.monthlySummary || "[Monthly/daily summary will appear here]"}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  {((searchTerm && highlightTerm) ? (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).filter(e => (e.text||"").toLowerCase().includes(highlightTerm)) : (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || [])).map(e => (
+                  {((searchTerm && highlightTerm)
+                    ? (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).filter(e =>
+                        (e.text || "").toLowerCase().includes(highlightTerm))
+                    : (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || [])
+                  ).map(e => (
                     <div key={e.id} className="bg-white p-3 rounded shadow">
                       <div className="text-sm">
-                        { canEditDay(selectedDate.dayKey) ? (
-                          // editable inline for today's day
+                        {canEditDay(selectedDate.dayKey) ? (
                           <EditableEntry
                             initialText={e.text}
                             onSave={(newText) => handleEditEntry(selectedDate.monthKey, selectedDate.dayKey, e.id, newText)}
                             highlight={highlightTerm}
                           />
                         ) : (
-                          // read-only past entry (with highlighting if searching)
                           <div>{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
                         )}
                       </div>
-                      <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                      <div className="text-xs text-gray-400 mt-1">
+                        {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1113,6 +1115,7 @@ export default function App() {
       </div>
     );
   }
+
   function EditableEntry({ initialText, onSave, highlight }) {
     const [text, setText] = useState(initialText || "");
     // Keep local changes even if parent re-renders
