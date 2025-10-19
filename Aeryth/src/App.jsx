@@ -142,6 +142,13 @@ export default function App() {
     });
   };
 
+  // Called when the user clicks “+ New Chat”
+  const handleNewChat = () => {
+    // Reset relevant React state
+    setExploreBuffer([]);
+    setCurrentView("explore");
+  };
+
   /* Explore ephemeral chat send */
   const handleExploreSend = async (text) => {
     if (!text?.trim()) return;
@@ -253,6 +260,7 @@ export default function App() {
     if (currentView === "diary") return <DiaryView />;
     if (currentView === "settings") return <SettingsPanel />;
     return <ExploreView />;
+    
   }
 
   function SetGoalPanel() {
@@ -886,7 +894,7 @@ export default function App() {
             <SidebarToggle inside />
           </div>
         </div>
-        <button onClick={() => setCurrentView("explore")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
+        <button onClick={handleNewChat} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
         <button onClick={() => setCurrentView("setGoal")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>
 
         <input placeholder="Search routines..." className="w-full p-2 border rounded-xl mb-3" />

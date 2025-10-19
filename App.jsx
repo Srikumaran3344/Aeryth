@@ -130,9 +130,7 @@ export default function App() {
   );
   useEffect(() => save("aeryth_diary_entries", diaryEntries), [diaryEntries]);
 
-  // temporary explore chat messages (not persisted)
-  const [exploreMessages, setExploreMessages] = useState([]);
-  // messagesStore used previously removed. Messages for routines not needed.
+
 
   /* UI state */
   const [currentRoutineId, setCurrentRoutineId] = useState(() => (routines[0]?.id ?? null));
@@ -206,14 +204,16 @@ export default function App() {
   /* ===========================
      Explore (temporary chat) functions
      =========================== */
-  const pushExploreMessage = (m) => setExploreMessages(prev => [...prev, { id: crypto.randomUUID(), ...m }]);
+  const [exploreMessages, setExploreMessages] = useState([]);
+  const [chatSessionId, setChatSessionId] = useState(0);
 
   const handleNewChat = () => {
-    // Resets the temporary explore chat
-    setExploreMessages([]);
-    setCurrentView("explore");
-    // keep currentRoutineId unchanged
+    //setExploreMessages([]);
+    //setChatSessionId(prev => prev + 1);
+    //setCurrentView("explore");
   };
+
+
 
   const handleSendExplore = async (text) => {
     if (!text?.trim() || isAILoading) return;
@@ -524,6 +524,28 @@ export default function App() {
 
         <input placeholder="Search routines..." className="w-full p-3 border rounded-xl mb-3" disabled />
 
+        <div className="flex-1 overflow-auto space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-800">Next Routines</h4>
+            <div className="mt-2 space-y-2">
+              {upcoming.length ? upcoming.map(r => (
+                <div key={r.id} className="p-3 bg-violet-50 rounded-xl border-l-4 border-violet-400">
+                  <div className="font-bold text-violet-800 truncate">{r.name}</div>
+                  <div className="text-xs text-violet-600 mt-1">{r.startTime} - {r.endTime}</div>
+                </div>
+              )) : <p className="text-sm text-gray-500 italic mt-2">No routines</p>}
+            </div>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold text-gray-800 mt-4">Routines</h4>
+            <div className="space-y-2 mt-2">
+              {routines.map(c => (
+                <RoutineStrip key={c.id} r={c} />
+              ))}
+            </div>
+          </div>
+        </div>
 
         <div className="pt-4 border-t mt-4 space-y-2">
           <button onClick={() => { setCurrentView("calendar"); setCalendarOffset(0); }} className={`flex items-center w-full p-3 rounded-xl ${currentView === "calendar" ? "bg-violet-100 text-violet-800 font-bold" : "hover:bg-gray-100"}`}><span className="mr-3 text-xl">🗓️</span>Calendar</button>
@@ -568,13 +590,17 @@ export default function App() {
      MainPanel content
      =========================== */
   function MainPanel() {
+    
     return (
+      
       <div className="flex-1 h-full p-6 overflow-hidden flex flex-col">
         <TopPills view={currentView} setView={setCurrentView} />
 
         {currentView === "explore" && (
-          <ExploreView />
+          <ExploreView key={chatSessionId} />
         )}
+
+
 
         {currentView === "setGoal" && (
           <SetGoalView onCreate={handleCreateRoutine} pendingTrackingStyle={pendingTrackingStyle} />
@@ -626,20 +652,80 @@ export default function App() {
      Explore View (temporary chat)
      =========================== */
   function ExploreView() {
-    const [input, setInput] = useState("");
     return (
       <>
         <div className="flex-1 overflow-y-auto space-y-4 pb-6">
-          <div className="text-center text-gray-500 italic mb-4">Aeryth's Tone: <span className="font-semibold text-violet-600">{settings?.aerythTone || "Friendly"}</span></div>
-          {exploreMessages.map((m) => <ChatMessage key={m.id} m={m} />)}
-          {isAILoading && <div className="flex justify-start"><div className="bg-white text-gray-600 px-4 py-3 rounded-2xl shadow-md flex items-center space-x-2 border"><svg className="animate-spin h-5 w-5 text-violet-500" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg><span>Aeryth is thinking...</span></div></div>}
+          <div className="text-center text-gray-500 italic mb-4">
+            Aeryth's Tone:{" "}
+            <span className="font-semibold text-violet-600">
+              {settings?.aerythTone || "Friendly"}
+            </span>
+          </div>
+
+          {exploreMessages.map((m) => (
+            <ChatMessage key={m.id} m={m} />
+          ))}
+
+          {isAILoading && (
+            <div className="flex justify-start">
+              <div className="bg-white text-gray-600 px-4 py-3 rounded-2xl shadow-md flex items-center space-x-2 border">
+                <svg
+                  className="animate-spin h-5 w-5 text-violet-500"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    className="opacity-25"
+                  />
+                  <path
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  />
+                </svg>
+                <span>Aeryth is thinking...</span>
+              </div>
+            </div>
+          )}
+
           <div ref={chatEndRef} />
         </div>
 
-        <form onSubmit={(e) => { e.preventDefault(); handleSendExplore(input); setInput(""); }} className="pt-4 border-t bg-white p-4">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSendExplore(exploreInput);
+            setExploreInput("");
+          }}
+          className="pt-4 border-t bg-white p-4"
+        >
           <div className="flex space-x-3">
-            <input value={input} onChange={(e) => setInput(e.target.value)} disabled={isAILoading} placeholder={isAILoading ? "Aeryth is thinking..." : "Start exploring a new task..."} className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-400" />
-            <button type="submit" disabled={isAILoading || !input.trim()} className={`px-6 py-3 rounded-xl font-bold ${isAILoading || !input.trim() ? "bg-gray-400 text-white" : "bg-violet-500 text-white hover:bg-violet-600"}`}>{isAILoading ? "..." : "Send"}</button>
+            <input
+              value={exploreInput}
+              onChange={(e) => setExploreInput(e.target.value)}
+              disabled={isAILoading}
+              placeholder={
+                isAILoading
+                  ? "Aeryth is thinking..."
+                  : "Start exploring a new task..."
+              }
+              className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-400"
+            />
+            <button
+              type="submit"
+              disabled={isAILoading || !exploreInput.trim()}
+              className={`px-6 py-3 rounded-xl font-bold ${
+                isAILoading || !exploreInput.trim()
+                  ? "bg-gray-400 text-white"
+                  : "bg-violet-500 text-white hover:bg-violet-600"
+              }`}
+            >
+              {isAILoading ? "..." : "Send"}
+            </button>
           </div>
         </form>
       </>
