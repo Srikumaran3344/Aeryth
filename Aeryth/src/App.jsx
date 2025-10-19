@@ -142,32 +142,30 @@ export default function App() {
     });
   };
 
-  // Called when the user clicks “+ New Chat”
+ const [chatSessionId, setChatSessionId] = useState(0);
+
   const handleNewChat = () => {
-    // Reset relevant React state
+    setChatSessionId(prev => prev + 1); // invalidate previous AI responses
     setExploreBuffer([]);
+    setIsAILoading(false);
     setCurrentView("explore");
   };
 
-  /* Explore ephemeral chat send */
   const handleExploreSend = async (text) => {
-    if (!text?.trim()) return;
-    const userMsg = { id: crypto.randomUUID(), role: "user", text, ts: new Date().toISOString() };
-    setExploreBuffer(prev => [...prev, userMsg]);
-    if (!availableModel()) {
-      setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "aeryth", text: "Local Gemini Nano not available.", ts: new Date().toISOString() }]);
-      return;
-    }
+    const currentSession = chatSessionId;
     setIsAILoading(true);
-    try {
-      const tempId = `explore_${crypto.randomUUID()}`;
-      const ai = await callGeminiTemp(tempId, [...exploreBuffer, userMsg], settings, routines);
-      setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "aeryth", text: ai ?? "No response", ts: new Date().toISOString() }]);
-    } catch (e) {
-      console.error(e);
-      setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "system", text: "AI error", ts: new Date().toISOString() }]);
-    } finally { setIsAILoading(false); }
+    const userMsg = { id: crypto.randomUUID(), role: "user", text };
+    setExploreBuffer(prev => [...prev, userMsg]);
+
+    const aiText = await callGemini("explore-temp", [...exploreBuffer, userMsg], settings, routines);
+
+    // Only update if this response matches the latest session
+    if (currentSession === chatSessionId) {
+      setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "aeryth", text: aiText }]);
+    }
+    setIsAILoading(false);
   };
+
 
   /* calendar events mapping */
   const calendarEvents = (() => {
