@@ -169,6 +169,16 @@ export default function App() {
       return n;
     });
   };
+  // update an existing diary entry's text (persisted)
+  const updateDiaryEntry = (monthKey, dayKey, entryId, newText) => {
+    setDiary(prev => {
+      const n = { ...prev };
+      if (!n[monthKey] || !n[monthKey][dayKey]) return prev;
+      n[monthKey] = { ...n[monthKey] };
+      n[monthKey][dayKey] = n[monthKey][dayKey].map(e => e.id === entryId ? { ...e, text: newText, editedAt: new Date().toISOString() } : e);
+      return n;
+    });
+  };
 
   // ensure monthly summary exists (naively generate) for past months when viewed
   const generateMonthlySummaryIfMissing = (monthKey) => {
@@ -374,12 +384,41 @@ export default function App() {
   function RoutineStickyView() {
     const r = routines.find(x => x.id === selectedRoutineId);
     if (!r) return <div className="p-6">Routine not found.</div>;
-    const prev = iso(new Date(Date.now()-86400000));
-    const cur = iso(new Date());
-    const next = iso(new Date(Date.now()+86400000));
-    const dates = (stickies[selectedRoutineId]?.dates) || {};
+
+    // controlled local state for current text to avoid losing focus
+    const prevKey = iso(new Date(Date.now() - 86400000));
+    const curKey = iso(new Date());
+    const nextKey = iso(new Date(Date.now() + 86400000));
+
+    // read existing stickies safely
+    const datesMap = (stickies[selectedRoutineId] && stickies[selectedRoutineId].dates) || {};
+
+    // utility to get current sticky object safely
+    const getSticky = (d) => ({ ...(datesMap[d] || { text: "", color: r.color || "violet" }) });
+
+    // local state per date so textarea is controlled and doesn't lose focus
+    const [localText, setLocalText] = useState(getSticky(curKey).text);
+    const [localPrevText, setLocalPrevText] = useState(getSticky(prevKey).text);
+    const [localNextText, setLocalNextText] = useState(getSticky(nextKey).text);
+    const [localColor, setLocalColor] = useState(getSticky(curKey).color || r.color || "violet");
+
+    // keep local state in sync if external stickies change (e.g. on mount or external edits)
+    useEffect(() => {
+      setLocalText(getSticky(curKey).text);
+      setLocalPrevText(getSticky(prevKey).text);
+      setLocalNextText(getSticky(nextKey).text);
+      setLocalColor(getSticky(curKey).color || r.color || "violet");
+    }, [selectedRoutineId, stickies, r]);
+
+    // Persist helpers - update global stickies state
+    const persistText = (d, txt) => {
+      setStickyText(selectedRoutineId, d, txt);
+    };
+    const persistColor = (d, c) => {
+      setStickyColor(selectedRoutineId, d, c);
+    };
+
     const colors = ["amber","violet","green","rose"];
-    const sticky = (d) => dates[d] || { text: "", color: r.color || "violet" };
 
     return (
       <div className="flex-1 h-full p-6 overflow-auto">
@@ -391,10 +430,22 @@ export default function App() {
             <div className="flex items-center justify-between mb-2">
               <div className="font-semibold">Current - {fmtShort(new Date())}</div>
               <div className="flex gap-2">
-                {colors.map(c => <button key={c} onClick={() => setStickyColor(selectedRoutineId, cur, c)} className={`w-4 h-4 rounded-full ${c==="amber"?"bg-amber-400":c==="violet"?"bg-violet-500":c==="green"?"bg-green-400":"bg-rose-400"}`} />)}
+                {colors.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => { setLocalColor(c); persistColor(curKey, c); }}
+                    className={`w-4 h-4 rounded-full ${c==="amber"?"bg-amber-400":c==="violet"?"bg-violet-500":c==="green"?"bg-green-400":"bg-rose-400"}`}
+                    aria-label={`Set color ${c}`}
+                  />
+                ))}
               </div>
             </div>
-            <textarea value={sticky(cur).text} onChange={(e)=>setStickyText(selectedRoutineId, cur, e.target.value)} className="w-full p-3 border rounded h-28 resize-none" />
+            <textarea
+              value={localText}
+              onChange={(e) => setLocalText(e.target.value)}
+              onBlur={() => persistText(curKey, localText)}
+              className="w-full p-3 border rounded h-28 resize-none"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -402,14 +453,26 @@ export default function App() {
               <div className="flex items-center justify-between mb-2">
                 <div className="font-semibold">Previous - {fmtShort(new Date(Date.now()-86400000))}</div>
               </div>
-              <textarea value={sticky(prev).text} onChange={() => {}} className="w-full p-3 border rounded h-24 resize-none" disabled />
+              <textarea
+                value={localPrevText}
+                onChange={(e) => setLocalPrevText(e.target.value)}
+                onBlur={() => persistText(prevKey, localPrevText)}
+                className="w-full p-3 border rounded h-24 resize-none"
+                // previous is typically read-only in your original design; keep it disabled to prevent editing unless you want it
+                disabled
+              />
             </div>
 
             <div className="bg-white p-4 rounded-xl shadow">
               <div className="flex items-center justify-between mb-2">
                 <div className="font-semibold">Next - {fmtShort(new Date(Date.now()+86400000))}</div>
               </div>
-              <textarea value={sticky(next).text} onChange={(e)=>setStickyText(selectedRoutineId, next, e.target.value)} className="w-full p-3 border rounded h-24 resize-none" />
+              <textarea
+                value={localNextText}
+                onChange={(e) => setLocalNextText(e.target.value)}
+                onBlur={() => persistText(nextKey, localNextText)}
+                className="w-full p-3 border rounded h-24 resize-none"
+              />
             </div>
           </div>
 
@@ -420,6 +483,7 @@ export default function App() {
       </div>
     );
   }
+
 
  function CalendarView() {
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -747,26 +811,28 @@ export default function App() {
     // UI state specific to Diary
     const [entryText, setEntryText] = useState("");
     const [showPast, setShowPast] = useState(false); // false = current day view; true = past entries view
-    const [selectedDate, setSelectedDate] = useState(null); // when in past entries and clicked a date => { monthKey, dayKey }
+    const [selectedDate, setSelectedDate] = useState(null); // { monthKey, dayKey } when viewing a day
     const [searchTerm, setSearchTerm] = useState("");
     const [grammarPreview, setGrammarPreview] = useState(null); // { correctedText } or null
     const [isPreviewVisible, setIsPreviewVisible] = useState(false);
-    const [diarySearchResults, setDiarySearchResults] = useState([]); // not persisted
+    const [diarySearchResults, setDiarySearchResults] = useState([]); // search results: {monthKey, dayKey, entries}
+    const [highlightTerm, setHighlightTerm] = useState("");
 
     // For the left pane listing today's entries (dedupe handled in addDiaryEntry)
     const thisMonthObj = diary[todayMonthKey] || {};
     const todaysEntries = (thisMonthObj && thisMonthObj[todayKey]) || [];
 
-    // For sidebar "New entry" behavior: open fresh editor for current day
+    // Open a fresh new entry editor
     const openNewEntry = () => {
       setShowPast(false);
       setSelectedDate(null);
       setEntryText("");
       setGrammarPreview(null);
       setIsPreviewVisible(false);
+      setHighlightTerm("");
     };
 
-    // Save handler (ensures only one save; addDiaryEntry handles dedupe)
+    // Save handler (new entry)
     const handleSave = () => {
       if (!entryText.trim()) return;
       addDiaryEntry(entryText.trim());
@@ -775,12 +841,28 @@ export default function App() {
       setIsPreviewVisible(false);
     };
 
-    // Grammar correction flow (local)
-    const handleGrammarCheck = () => {
-      // use local correction function
-      const corrected = localGrammarCorrect(entryText);
-      setGrammarPreview({ correctedText: corrected });
-      setIsPreviewVisible(true);
+    // Grammar correction: use gemini if available else local
+    const handleGrammarCheck = async () => {
+      if (!entryText.trim()) return alert("Write something first");
+      setIsAILoading(true);
+      try {
+        let corrected;
+        if (availableModel && availableModel()) {
+          // use your existing guarded wrapper
+          corrected = await callGeminiDiary(entryText);
+        } else {
+          corrected = localGrammarCorrect(entryText);
+        }
+        setGrammarPreview({ correctedText: corrected });
+        setIsPreviewVisible(true);
+      } catch (err) {
+        console.error("Grammar check failed", err);
+        const fallback = localGrammarCorrect(entryText);
+        setGrammarPreview({ correctedText: fallback });
+        setIsPreviewVisible(true);
+      } finally {
+        setIsAILoading(false);
+      }
     };
 
     const acceptGrammarChanges = () => {
@@ -792,7 +874,6 @@ export default function App() {
     };
 
     const cancelGrammarPreview = () => {
-      // Back -> hide preview but keep original text untouched
       setIsPreviewVisible(false);
       setGrammarPreview(null);
     };
@@ -805,25 +886,21 @@ export default function App() {
         allDateKeys.push({ monthKey: mk, dayKey: dk });
       });
     });
-    // sort descending by dayKey
-    allDateKeys.sort((a,b) => b.dayKey.localeCompare(a.dayKey));
+    allDateKeys.sort((a,b) => b.dayKey.localeCompare(a.dayKey)); // newest first
 
     // Group dates into months map for Past Entries listing
     const monthsMap = {};
     allDateKeys.forEach(({ monthKey, dayKey }) => {
-      const mk = monthKey;
-      monthsMap[mk] = monthsMap[mk] || { days: [] };
-      monthsMap[mk].days.push(dayKey);
+      monthsMap[monthKey] = monthsMap[monthKey] || { days: [] };
+      monthsMap[monthKey].days.push(dayKey);
     });
 
-    // Generate monthly summaries if a month is fully in past and missing
+    // auto-generate monthly summaries for past months
     useEffect(() => {
-      // For months earlier than current month, ensure monthlySummary exists
       const now = new Date();
       Object.keys(monthsMap).forEach(mk => {
         const [y, m] = mk.split("-").map(Number);
         if (y < now.getFullYear() || (y === now.getFullYear() && m < (now.getMonth()+1))) {
-          // past month
           generateMonthlySummaryIfMissing(mk);
         }
       });
@@ -832,27 +909,27 @@ export default function App() {
     // When a past date is clicked, open it
     const openPastDate = (monthKey, dayKey) => {
       setSelectedDate({ monthKey, dayKey });
+      setShowPast(true);
+      setHighlightTerm(searchTerm.trim().toLowerCase());
     };
 
-    // Back navigation from selectedDate to month listing or from past listing to today
+    // Back navigation
     const handleBack = () => {
       if (selectedDate) {
-        // go back to past months listing
         setSelectedDate(null);
+        setHighlightTerm("");
       } else {
-        // go back to today view
         setShowPast(false);
         setSearchTerm("");
+        setHighlightTerm("");
       }
     };
 
-    // Search within diary: date (YYYY-MM-DD), month name, time (HH:MM) or text content
+    // Search logic: search across diary and create `diarySearchResults`
     const runDiarySearch = (term) => {
       const t = term.trim().toLowerCase();
-      if (!t) {
-        setDiarySearchResults([]);
-        return;
-      }
+      setHighlightTerm(t);
+      if (!t) { setDiarySearchResults([]); return; }
 
       const results = [];
       Object.keys(diary).forEach(mk => {
@@ -860,76 +937,78 @@ export default function App() {
         Object.keys(diary[mk]).forEach(dk => {
           if (dk === "monthlySummary") return;
           const entries = diary[mk][dk] || [];
-          // match date
           if (dk.includes(t) || monthDisplay.includes(t)) {
             results.push({ monthKey: mk, dayKey: dk, entries });
             return;
           }
-          // match entries text/time
           const matching = entries.filter(e => {
             const timeStr = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
             return (e.text || "").toLowerCase().includes(t) || timeStr.includes(t);
           });
-          if (matching.length) {
-            results.push({ monthKey: mk, dayKey: dk, entries: matching });
-            return;
-          }
+          if (matching.length) results.push({ monthKey: mk, dayKey: dk, entries: matching });
         });
       });
       setDiarySearchResults(results);
     };
 
     useEffect(() => {
-      const handler = setTimeout(() => runDiarySearch(searchTerm), 250);
-      return () => clearTimeout(handler);
+      const id = setTimeout(() => runDiarySearch(searchTerm), 220);
+      return () => clearTimeout(id);
     }, [searchTerm, diary]);
 
-    // utility: check if delete allowed for an entry (only for same-day entries while still same day)
-    const canDeleteEntry = (dayKey) => {
-      return dayKey === todayKey;
+    // helper to check whether a day is editable (only today editable)
+    const canEditDay = (dayKey) => dayKey === todayKey;
+
+    // helper to escape regex
+    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const renderEntryTextWithHighlight = (text, term) => {
+      if (!term) return text;
+      const re = new RegExp(`(${escapeRegExp(term)})`, "ig");
+      const parts = text.split(re);
+      return parts.map((p, i) => re.test(p) ? <span key={i} className="bg-purple-200 rounded px-1">{p}</span> : <span key={i}>{p}</span>);
     };
 
-    // Hover delete UI is implemented via button visible on hover (left list); delete only if canDeleteEntry
+    // Edit a single existing entry (only for today's entries)
+    const handleEditEntry = (monthKey, dayKey, entryId, newText) => {
+      if (!canEditDay(dayKey)) return;
+      updateDiaryEntry(monthKey, dayKey, entryId, newText);
+    };
 
     return (
       <div className="flex-1 h-full p-6 overflow-auto">
         <div className="max-w-4xl mx-auto flex">
-          {/* Left Column */}
           <div className="w-1/3 bg-white/80 p-4 border-r h-[80vh] overflow-auto">
             <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="font-bold text-violet-700">{fmtShort(today)}</h3>
-              </div>
+              <div><h3 className="font-bold text-violet-700">{fmtShort(today)}</h3></div>
             </div>
 
-            <div className="mb-3 space-y-2">
+            <div className="mb-3">
               <button onClick={openNewEntry} className="w-full py-2 rounded bg-violet-500 text-white mb-2">New entry</button>
-
               <div className="flex gap-2">
-                <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
+                <input value={searchTerm} onChange={(e)=>setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
                 <button onClick={() => { setShowPast(s => !s); setSelectedDate(null); }} className="px-3 py-2 rounded bg-gray-100">{showPast ? "Back" : "Past Entries"}</button>
               </div>
             </div>
 
-            {/* When not showing past: show today's entries */}
             {!showPast && (
               <div className="space-y-2">
                 {todaysEntries.map(e => (
-                  <div key={e.id} className="p-3 bg-white rounded shadow group relative">
-                    <div className="text-sm">{e.text}</div>
+                  <div key={e.id} className="p-3 bg-white rounded shadow group relative cursor-pointer" onClick={() => { setSelectedDate({ monthKey: todayMonthKey, dayKey: todayKey }); }}>
+                    <div className="text-sm">{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
                     <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-                    {canDeleteEntry(todayKey) && (
-                      <button onClick={() => { if (confirm("Delete entry?")) deleteDiaryEntry(todayMonthKey, todayKey, e.id); }} className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 text-red-500">Delete</button>
-                    )}
-                    {/* Clicking the entry opens it for editing */}
-                    <button onClick={() => { setSelectedDate({ monthKey: todayMonthKey, dayKey: todayKey }); setShowPast(false); }} className="absolute inset-0 opacity-0" aria-hidden />
+
+                    {/* delete button bottom-right on hover */}
+                    <div className="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100">
+                      <button onClick={(ev) => { ev.stopPropagation(); if (confirm("Delete entry?")) deleteDiaryEntry(todayMonthKey, todayKey, e.id); }} className="text-red-500">Delete</button>
+                    </div>
                   </div>
                 ))}
                 {!todaysEntries.length && <div className="text-sm text-gray-500">No entries for today yet.</div>}
               </div>
             )}
 
-            {/* When showing past - list months and days (or search results) */}
+            {/* Past entries / months listing */}
             {showPast && (
               <div className="space-y-3">
                 {searchTerm ? (
@@ -969,44 +1048,18 @@ export default function App() {
             )}
           </div>
 
-          {/* Right Column */}
           <div className="flex-1 p-6 h-[80vh] overflow-auto">
-            {/* If selectedDate set -> show that day's page */}
-            {selectedDate ? (
-              <>
-                <div className="flex items-center gap-3 mb-3">
-                  <button onClick={handleBack} className="px-3 py-2 rounded bg-gray-100">Back</button>
-                  <h3 className="text-lg font-semibold">{new Date(selectedDate.dayKey).toLocaleDateString()}</h3>
-                </div>
-
-                <div className="bg-white p-4 rounded shadow mb-3">
-                  <div className="font-bold">Summary (auto)</div>
-                  <div className="text-sm text-gray-600 mt-2">{diary[selectedDate.monthKey]?.monthlySummary && diary[selectedDate.monthKey]?.monthlySummary.slice ? diary[selectedDate.monthKey].monthlySummary : "[Monthly summary not available yet]"}</div>
-                </div>
-
-                <div className="space-y-2">
-                  {(diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).map(e => (
-                    <div key={e.id} className="bg-white p-3 rounded shadow">
-                      <div className="text-sm">{e.text}</div>
-                      <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              // Current day editor view (editable)
+            {!selectedDate && (
               <>
                 <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(today)}</h2>
                 <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
 
                 <textarea value={entryText} onChange={e=>setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
 
-                {/* Grammar correction preview panel (appears below textarea when triggered) */}
                 {isPreviewVisible && grammarPreview && (
                   <div className="mt-4 bg-white border rounded p-4 shadow">
                     <div className="font-semibold mb-2">Grammar correction preview</div>
                     <div className="whitespace-pre-wrap text-sm p-2 border rounded bg-gray-50" style={{ minHeight: 80 }}>{grammarPreview.correctedText}</div>
-
                     <div className="flex gap-3 mt-3">
                       <button onClick={acceptGrammarChanges} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Accept Changes</button>
                       <button onClick={cancelGrammarPreview} className="flex-1 py-2 rounded-lg border">Back</button>
@@ -1015,23 +1068,43 @@ export default function App() {
                 )}
 
                 <div className="flex gap-3 mt-4">
-                  <button onClick={async ()=> {
-                    // Grammar check local version (non-destructive)
-                    if (!entryText.trim()) return alert("Write something first");
-                    // Simulate loading state
-                    setIsAILoading(true);
-                    try {
-                      // Use localGrammarCorrect for now
-                      handleGrammarCheck();
-                    } catch (e) {
-                      console.error(e);
-                      alert("Grammar correction failed");
-                    } finally {
-                      setIsAILoading(false);
-                    }
-                  }} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{isAILoading ? "..." : "Correct Grammar"}</button>
-
+                  <button onClick={handleGrammarCheck} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{isAILoading ? "..." : "Correct Grammar"}</button>
                   <button onClick={handleSave} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Save Entry</button>
+                </div>
+              </>
+            )}
+
+            {selectedDate && (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <button onClick={handleBack} className="px-3 py-2 rounded bg-gray-100">Back</button>
+                  <h3 className="text-lg font-semibold">{new Date(selectedDate.dayKey).toLocaleDateString()}</h3>
+                </div>
+
+                <div className="bg-white p-4 rounded shadow mb-3">
+                  <div className="font-bold">Summary (auto)</div>
+                  <div className="text-sm text-gray-600 mt-2">{diary[selectedDate.monthKey]?.monthlySummary || "[Monthly/daily summary will appear here]"}</div>
+                </div>
+
+                <div className="space-y-2">
+                  {((searchTerm && highlightTerm) ? (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).filter(e => (e.text||"").toLowerCase().includes(highlightTerm)) : (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || [])).map(e => (
+                    <div key={e.id} className="bg-white p-3 rounded shadow">
+                      <div className="text-sm">
+                        { canEditDay(selectedDate.dayKey) ? (
+                          // editable inline for today's day
+                          <EditableEntry
+                            initialText={e.text}
+                            onSave={(newText) => handleEditEntry(selectedDate.monthKey, selectedDate.dayKey, e.id, newText)}
+                            highlight={highlightTerm}
+                          />
+                        ) : (
+                          // read-only past entry (with highlighting if searching)
+                          <div>{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}
@@ -1040,6 +1113,31 @@ export default function App() {
       </div>
     );
   }
+  function EditableEntry({ initialText, onSave, highlight }) {
+    const [text, setText] = useState(initialText || "");
+    // Keep local changes even if parent re-renders
+    useEffect(() => setText(initialText || ""), [initialText]);
+
+    const save = () => {
+      if (!text.trim()) return;
+      onSave(text.trim());
+    };
+
+    return (
+      <div>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="w-full p-2 border rounded resize-none"
+          rows={3}
+        />
+        <div className="flex gap-2 mt-2">
+          <button onClick={save} className="px-3 py-1 rounded bg-violet-500 text-white">Save</button>
+        </div>
+      </div>
+    );
+  }
+
 
   function SettingsPanel() {
     const [form, setForm] = useState(settings);
