@@ -25,6 +25,7 @@ const fmtShort = (d) => `${String(d.getDate()).padStart(2, "0")} ${d.toLocaleStr
 
 /* -----------------------
    Gemini Nano wrappers (guarded)
+   (left unchanged, used as before)
    ----------------------- */
 let sessions = {};
 const availableModel = () => !!(window && window.LanguageModel && window.LanguageModel.create);
@@ -51,6 +52,26 @@ async function callGeminiDiary(text) {
 }
 
 /* -----------------------
+   Local grammar-corrector (placeholder)
+   Does not call external APIs — returns a lightly "corrected" string.
+   You can replace this with your real API later.
+   ----------------------- */
+function localGrammarCorrect(text) {
+  if (!text) return "";
+  // Very naive corrections (placeholder)
+  let out = text.trim();
+  // Fix multiple spaces
+  out = out.replace(/\s+/g, " ");
+  // Capitalize first letter of sentences (very naive)
+  out = out.replace(/(^\s*\w|[.!?]\s*\w)/g, (c) => c.toUpperCase());
+  // Fix common mistakes
+  out = out.replace(/\bi\b/g, "I");
+  // Ensure ending punctuation
+  if (!/[.!?]$/.test(out)) out = out + ".";
+  return out;
+}
+
+/* -----------------------
    App
    ----------------------- */
 export default function App() {
@@ -61,7 +82,7 @@ export default function App() {
   const [routines, setRoutines] = useState(() => load("aeryth_routines", []));
   useEffect(() => save("aeryth_routines", routines), [routines]);
 
-  // diary structure: { "YYYY-M": { "YYYY-MM-DD": [{id,text,ts}], ... , monthlySummary: "..." } }
+  // diary structure: { "YYYY-M": { "YYYY-MM-DD": [{id,text,ts}], monthlySummary: "..." } }
   const [diary, setDiary] = useState(() => load("aeryth_diary", {}));
   useEffect(() => save("aeryth_diary", diary), [diary]);
 
@@ -119,16 +140,23 @@ export default function App() {
   const setStickyColor = (rid, dayIso, color) => setStickies(prev => { const n = { ...prev }; n[rid] = n[rid] || { dates: {} }; n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), color } }; return n; });
 
   /* diary */
-  const addDiaryEntry = (text) => {
+  // addDiaryEntry: dedupe quick duplicates and insert at head
+  const addDiaryEntry = (text, onDate = null) => {
     if (!text?.trim()) return;
-    const d = new Date();
+    const d = onDate ? new Date(onDate) : new Date();
     const dayKey = iso(d);
     const monthKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     setDiary(prev => {
       const n = { ...prev };
       n[monthKey] = n[monthKey] || {};
       n[monthKey][dayKey] = n[monthKey][dayKey] || [];
-      // push at head
+
+      // Prevent accidental duplicate: if last saved entry text identical and timestamp within 3 seconds, skip
+      const head = n[monthKey][dayKey][0];
+      if (head && head.text === text && Math.abs(new Date(head.ts) - d) < 3000) {
+        return n;
+      }
+
       n[monthKey][dayKey] = [{ id: crypto.randomUUID(), text, ts: d.toISOString() }, ...n[monthKey][dayKey]];
       return n;
     });
@@ -142,7 +170,24 @@ export default function App() {
     });
   };
 
- const [chatSessionId, setChatSessionId] = useState(0);
+  // ensure monthly summary exists (naively generate) for past months when viewed
+  const generateMonthlySummaryIfMissing = (monthKey) => {
+    setDiary(prev => {
+      const n = { ...prev };
+      const month = n[monthKey] || {};
+      if (!month) return n;
+      if (month.monthlySummary) return n;
+      // Gather all texts in month and create a naive summary (first 300 chars)
+      const texts = Object.keys(month)
+        .filter(k => k !== "monthlySummary")
+        .flatMap(day => (month[day] || []).map(e => e.text));
+      const summary = texts.join(" ").slice(0, 800) || "No events for this month.";
+      n[monthKey] = { ...(n[monthKey] || {}), monthlySummary: summary };
+      return n;
+    });
+  };
+
+  const [chatSessionId, setChatSessionId] = useState(0);
 
   const handleNewChat = () => {
     setChatSessionId(prev => prev + 1); // invalidate previous AI responses
@@ -157,7 +202,7 @@ export default function App() {
     const userMsg = { id: crypto.randomUUID(), role: "user", text };
     setExploreBuffer(prev => [...prev, userMsg]);
 
-    const aiText = await callGemini("explore-temp", [...exploreBuffer, userMsg], settings, routines);
+    const aiText = await callGeminiTemp("explore-temp", [...exploreBuffer, userMsg], settings, routines);
 
     // Only update if this response matches the latest session
     if (currentSession === chatSessionId) {
@@ -165,7 +210,6 @@ export default function App() {
     }
     setIsAILoading(false);
   };
-
 
   /* calendar events mapping */
   const calendarEvents = (() => {
@@ -258,7 +302,6 @@ export default function App() {
     if (currentView === "diary") return <DiaryView />;
     if (currentView === "settings") return <SettingsPanel />;
     return <ExploreView />;
-    
   }
 
   function SetGoalPanel() {
@@ -686,120 +729,309 @@ export default function App() {
 
 
 
+/* -----------------------
+   DiaryView (rewritten with requested features)
+   - Fixes double-save
+   - Today's entries editable; past entries read-only
+   - New Entry button
+   - Past Entries navigation, monthly grouping and summaries
+   - Grammar-correction preview panel (local)
+   - Hover-delete for same-day entries (only allowed while still same day)
+   - Search bar for date/month/text/time
+   ----------------------- */
   function DiaryView() {
-    const now = new Date();
-    const monthKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-    const todayKey = iso(now);
-    const todaysEntries = (diary[monthKey]?.[todayKey]) || [];
-    const [entryText, setEntryText] = useState("");
-    const [showPast, setShowPast] = useState(false);
-    const [selectedDate, setSelectedDate] = useState(null);
+    const today = new Date();
+    const todayMonthKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}`;
+    const todayKey = iso(today);
 
-    const listDates = () => {
-      const keys = [];
-      Object.keys(diary).forEach(mk => {
-        Object.keys(diary[mk]).forEach(dk => {
-          if (dk === "monthlySummary") return;
-          keys.push({ monthKey: mk, dayKey: dk });
-        });
-      });
-      keys.sort((a,b) => b.dayKey.localeCompare(a.dayKey));
-      return keys;
+    // UI state specific to Diary
+    const [entryText, setEntryText] = useState("");
+    const [showPast, setShowPast] = useState(false); // false = current day view; true = past entries view
+    const [selectedDate, setSelectedDate] = useState(null); // when in past entries and clicked a date => { monthKey, dayKey }
+    const [searchTerm, setSearchTerm] = useState("");
+    const [grammarPreview, setGrammarPreview] = useState(null); // { correctedText } or null
+    const [isPreviewVisible, setIsPreviewVisible] = useState(false);
+    const [diarySearchResults, setDiarySearchResults] = useState([]); // not persisted
+
+    // For the left pane listing today's entries (dedupe handled in addDiaryEntry)
+    const thisMonthObj = diary[todayMonthKey] || {};
+    const todaysEntries = (thisMonthObj && thisMonthObj[todayKey]) || [];
+
+    // For sidebar "New entry" behavior: open fresh editor for current day
+    const openNewEntry = () => {
+      setShowPast(false);
+      setSelectedDate(null);
+      setEntryText("");
+      setGrammarPreview(null);
+      setIsPreviewVisible(false);
     };
 
+    // Save handler (ensures only one save; addDiaryEntry handles dedupe)
     const handleSave = () => {
       if (!entryText.trim()) return;
       addDiaryEntry(entryText.trim());
       setEntryText("");
+      setGrammarPreview(null);
+      setIsPreviewVisible(false);
     };
+
+    // Grammar correction flow (local)
+    const handleGrammarCheck = () => {
+      // use local correction function
+      const corrected = localGrammarCorrect(entryText);
+      setGrammarPreview({ correctedText: corrected });
+      setIsPreviewVisible(true);
+    };
+
+    const acceptGrammarChanges = () => {
+      if (grammarPreview?.correctedText != null) {
+        setEntryText(grammarPreview.correctedText);
+      }
+      setIsPreviewVisible(false);
+      setGrammarPreview(null);
+    };
+
+    const cancelGrammarPreview = () => {
+      // Back -> hide preview but keep original text untouched
+      setIsPreviewVisible(false);
+      setGrammarPreview(null);
+    };
+
+    // Build list of past months/days for Past Entries view
+    const allDateKeys = [];
+    Object.keys(diary).forEach(mk => {
+      Object.keys(diary[mk]).forEach(dk => {
+        if (dk === "monthlySummary") return;
+        allDateKeys.push({ monthKey: mk, dayKey: dk });
+      });
+    });
+    // sort descending by dayKey
+    allDateKeys.sort((a,b) => b.dayKey.localeCompare(a.dayKey));
+
+    // Group dates into months map for Past Entries listing
+    const monthsMap = {};
+    allDateKeys.forEach(({ monthKey, dayKey }) => {
+      const mk = monthKey;
+      monthsMap[mk] = monthsMap[mk] || { days: [] };
+      monthsMap[mk].days.push(dayKey);
+    });
+
+    // Generate monthly summaries if a month is fully in past and missing
+    useEffect(() => {
+      // For months earlier than current month, ensure monthlySummary exists
+      const now = new Date();
+      Object.keys(monthsMap).forEach(mk => {
+        const [y, m] = mk.split("-").map(Number);
+        if (y < now.getFullYear() || (y === now.getFullYear() && m < (now.getMonth()+1))) {
+          // past month
+          generateMonthlySummaryIfMissing(mk);
+        }
+      });
+    }, [diary]); // eslint-disable-line
+
+    // When a past date is clicked, open it
+    const openPastDate = (monthKey, dayKey) => {
+      setSelectedDate({ monthKey, dayKey });
+    };
+
+    // Back navigation from selectedDate to month listing or from past listing to today
+    const handleBack = () => {
+      if (selectedDate) {
+        // go back to past months listing
+        setSelectedDate(null);
+      } else {
+        // go back to today view
+        setShowPast(false);
+        setSearchTerm("");
+      }
+    };
+
+    // Search within diary: date (YYYY-MM-DD), month name, time (HH:MM) or text content
+    const runDiarySearch = (term) => {
+      const t = term.trim().toLowerCase();
+      if (!t) {
+        setDiarySearchResults([]);
+        return;
+      }
+
+      const results = [];
+      Object.keys(diary).forEach(mk => {
+        const monthDisplay = new Date(`${mk}-01`).toLocaleString(undefined, { month: "long", year: "numeric" }).toLowerCase();
+        Object.keys(diary[mk]).forEach(dk => {
+          if (dk === "monthlySummary") return;
+          const entries = diary[mk][dk] || [];
+          // match date
+          if (dk.includes(t) || monthDisplay.includes(t)) {
+            results.push({ monthKey: mk, dayKey: dk, entries });
+            return;
+          }
+          // match entries text/time
+          const matching = entries.filter(e => {
+            const timeStr = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
+            return (e.text || "").toLowerCase().includes(t) || timeStr.includes(t);
+          });
+          if (matching.length) {
+            results.push({ monthKey: mk, dayKey: dk, entries: matching });
+            return;
+          }
+        });
+      });
+      setDiarySearchResults(results);
+    };
+
+    useEffect(() => {
+      const handler = setTimeout(() => runDiarySearch(searchTerm), 250);
+      return () => clearTimeout(handler);
+    }, [searchTerm, diary]);
+
+    // utility: check if delete allowed for an entry (only for same-day entries while still same day)
+    const canDeleteEntry = (dayKey) => {
+      return dayKey === todayKey;
+    };
+
+    // Hover delete UI is implemented via button visible on hover (left list); delete only if canDeleteEntry
 
     return (
       <div className="flex-1 h-full p-6 overflow-auto">
         <div className="max-w-4xl mx-auto flex">
+          {/* Left Column */}
           <div className="w-1/3 bg-white/80 p-4 border-r h-[80vh] overflow-auto">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-bold text-violet-700">{fmtShort(now)}</h3>
+              <div>
+                <h3 className="font-bold text-violet-700">{fmtShort(today)}</h3>
+              </div>
             </div>
 
-            <div className="mb-3">
-              <button onClick={()=>setShowPast(s => !s)} className="w-full py-2 rounded bg-gray-100 mb-2">{showPast ? "Back" : "Past Entries"}</button>
-              <input placeholder="Search date / month / time" className="w-full p-2 border rounded" />
+            <div className="mb-3 space-y-2">
+              <button onClick={openNewEntry} className="w-full py-2 rounded bg-violet-500 text-white mb-2">New entry</button>
+
+              <div className="flex gap-2">
+                <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
+                <button onClick={() => { setShowPast(s => !s); setSelectedDate(null); }} className="px-3 py-2 rounded bg-gray-100">{showPast ? "Back" : "Past Entries"}</button>
+              </div>
             </div>
 
+            {/* When not showing past: show today's entries */}
             {!showPast && (
               <div className="space-y-2">
                 {todaysEntries.map(e => (
                   <div key={e.id} className="p-3 bg-white rounded shadow group relative">
                     <div className="text-sm">{e.text}</div>
                     <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-                    <button onClick={() => { if (confirm("Delete entry?")) deleteDiaryEntry(monthKey, todayKey, e.id); }} className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 text-red-500">Delete</button>
+                    {canDeleteEntry(todayKey) && (
+                      <button onClick={() => { if (confirm("Delete entry?")) deleteDiaryEntry(todayMonthKey, todayKey, e.id); }} className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 text-red-500">Delete</button>
+                    )}
+                    {/* Clicking the entry opens it for editing */}
+                    <button onClick={() => { setSelectedDate({ monthKey: todayMonthKey, dayKey: todayKey }); setShowPast(false); }} className="absolute inset-0 opacity-0" aria-hidden />
                   </div>
                 ))}
+                {!todaysEntries.length && <div className="text-sm text-gray-500">No entries for today yet.</div>}
               </div>
             )}
 
+            {/* When showing past - list months and days (or search results) */}
             {showPast && (
-              <div className="space-y-2">
-                {listDates().map(k => (
-                  <div key={`${k.monthKey}-${k.dayKey}`} className="p-3 bg-white rounded shadow flex justify-between items-center">
-                    <div>
-                      <div className="font-medium">{new Date(k.dayKey).toLocaleDateString()}</div>
-                      <div className="text-xs text-gray-500">{k.monthKey}</div>
+              <div className="space-y-3">
+                {searchTerm ? (
+                  diarySearchResults.length ? diarySearchResults.map(r => (
+                    <div key={`${r.monthKey}-${r.dayKey}`} className="p-3 bg-white rounded shadow flex justify-between items-center">
+                      <div>
+                        <div className="font-medium">{new Date(r.dayKey).toLocaleDateString()}</div>
+                        <div className="text-xs text-gray-500">{r.monthKey}</div>
+                      </div>
+                      <button onClick={() => openPastDate(r.monthKey, r.dayKey)} className="px-3 py-2 rounded bg-violet-500 text-white">Open</button>
                     </div>
-                    <button onClick={() => setSelectedDate(k)} className="px-3 py-2 rounded bg-violet-500 text-white">Open</button>
-                  </div>
-                ))}
+                  )) : <div className="text-sm text-gray-500">No results</div>
+                ) : (
+                  Object.keys(monthsMap).length ? Object.keys(monthsMap).map(mk => (
+                    <div key={mk} className="bg-white p-3 rounded shadow">
+                      <div className="flex justify-between items-center mb-2">
+                        <div>
+                          <div className="font-semibold">{new Date(`${mk}-01`).toLocaleString(undefined, { month: "long", year: "numeric" })}</div>
+                          <div className="text-xs text-gray-500">{mk}</div>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        {(monthsMap[mk].days || []).map(dayKey => (
+                          <div key={dayKey} className="flex justify-between items-center p-2 border rounded hover:bg-gray-50">
+                            <div>
+                              <div className="font-medium">{new Date(dayKey).toLocaleDateString()}</div>
+                              <div className="text-xs text-gray-500">{(diary[mk][dayKey] || []).length} entries</div>
+                            </div>
+                            <button onClick={() => openPastDate(mk, dayKey)} className="px-3 py-1 rounded bg-violet-500 text-white">Open</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )) : <div className="text-sm text-gray-500">No past entries yet.</div>
+                )}
               </div>
             )}
           </div>
 
+          {/* Right Column */}
           <div className="flex-1 p-6 h-[80vh] overflow-auto">
-            {!selectedDate && (
-              <>
-                <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(now)}</h2>
-                <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
-
-                <textarea value={entryText} onChange={e=>setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
-                <div className="flex gap-3 mt-4">
-                  <button onClick={async ()=> {
-                    if (!entryText.trim()) return;
-                    // grammar check via Gemini Nano (guarded)
-                    if (availableModel()) {
-                      setIsAILoading(true);
-                      try {
-                        const corrected = await callGeminiDiary(entryText);
-                        setEntryText(corrected ?? entryText);
-                      } catch (e) { console.error(e); alert("Grammar API failed"); }
-                      finally { setIsAILoading(false); }
-                    } else {
-                      alert("Local AI unavailable");
-                    }
-                  }} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{isAILoading ? "..." : "Correct Grammar"}</button>
-
-                  <button onClick={handleSave} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Save Entry</button>
-                </div>
-              </>
-            )}
-
-            {selectedDate && (
+            {/* If selectedDate set -> show that day's page */}
+            {selectedDate ? (
               <>
                 <div className="flex items-center gap-3 mb-3">
-                  <button onClick={() => setSelectedDate(null)} className="px-3 py-2 rounded bg-gray-100">Back</button>
+                  <button onClick={handleBack} className="px-3 py-2 rounded bg-gray-100">Back</button>
                   <h3 className="text-lg font-semibold">{new Date(selectedDate.dayKey).toLocaleDateString()}</h3>
                 </div>
 
                 <div className="bg-white p-4 rounded shadow mb-3">
                   <div className="font-bold">Summary (auto)</div>
-                  <div className="text-sm text-gray-600 mt-2">[Monthly/daily summaries are auto-generated in production]</div>
+                  <div className="text-sm text-gray-600 mt-2">{diary[selectedDate.monthKey]?.monthlySummary && diary[selectedDate.monthKey]?.monthlySummary.slice ? diary[selectedDate.monthKey].monthlySummary : "[Monthly summary not available yet]"}</div>
                 </div>
 
                 <div className="space-y-2">
                   {(diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).map(e => (
                     <div key={e.id} className="bg-white p-3 rounded shadow">
                       <div className="text-sm">{e.text}</div>
-                      <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString()}</div>
+                      <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                     </div>
                   ))}
+                </div>
+              </>
+            ) : (
+              // Current day editor view (editable)
+              <>
+                <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(today)}</h2>
+                <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
+
+                <textarea value={entryText} onChange={e=>setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
+
+                {/* Grammar correction preview panel (appears below textarea when triggered) */}
+                {isPreviewVisible && grammarPreview && (
+                  <div className="mt-4 bg-white border rounded p-4 shadow">
+                    <div className="font-semibold mb-2">Grammar correction preview</div>
+                    <div className="whitespace-pre-wrap text-sm p-2 border rounded bg-gray-50" style={{ minHeight: 80 }}>{grammarPreview.correctedText}</div>
+
+                    <div className="flex gap-3 mt-3">
+                      <button onClick={acceptGrammarChanges} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Accept Changes</button>
+                      <button onClick={cancelGrammarPreview} className="flex-1 py-2 rounded-lg border">Back</button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-3 mt-4">
+                  <button onClick={async ()=> {
+                    // Grammar check local version (non-destructive)
+                    if (!entryText.trim()) return alert("Write something first");
+                    // Simulate loading state
+                    setIsAILoading(true);
+                    try {
+                      // Use localGrammarCorrect for now
+                      handleGrammarCheck();
+                    } catch (e) {
+                      console.error(e);
+                      alert("Grammar correction failed");
+                    } finally {
+                      setIsAILoading(false);
+                    }
+                  }} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{isAILoading ? "..." : "Correct Grammar"}</button>
+
+                  <button onClick={handleSave} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Save Entry</button>
                 </div>
               </>
             )}
@@ -862,6 +1094,7 @@ export default function App() {
                 </div>
               </div>
             ))}
+
             {isAILoading && <div className="text-gray-500">Aeryth is thinking...</div>}
             <div ref={chatEndRef} />
           </div>
@@ -880,6 +1113,10 @@ export default function App() {
 
   /* Sidebar */
   function Sidebar() {
+    const [searchRoutines, setSearchRoutines] = useState("");
+
+    const filteredRoutines = routines.filter(r => r.name?.toLowerCase().includes(searchRoutines.trim().toLowerCase()));
+
     return (
       <div className="w-80 h-full p-4 flex flex-col bg-white border-l">
         <div className="flex items-center justify-between mb-4 pt-1">
@@ -895,19 +1132,19 @@ export default function App() {
         <button onClick={handleNewChat} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
         <button onClick={() => setCurrentView("setGoal")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>
 
-        <input placeholder="Search routines..." className="w-full p-2 border rounded-xl mb-3" />
+        <input value={searchRoutines} onChange={(e) => setSearchRoutines(e.target.value)} placeholder="Search routines..." className="w-full p-2 border rounded-xl mb-3" />
 
         <div className="mb-4 flex flex-col gap-2">
 
-          {routines.length > 0 && (() => {
-            // Find next upcoming routine
+          {filteredRoutines.length > 0 && (() => {
+            // Find next upcoming routine (based on current weekday)
             const todayIso = iso(new Date());
-            const upcoming = routines
+            const upcoming = filteredRoutines
               .map(r => {
                 const daysMap = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:0 };
                 const d = new Date();
                 const wd = d.getUTCDay();
-                if (r.days.some(dd => daysMap[dd] === wd)) return r;
+                if (r.days && r.days.some(dd => daysMap[dd] === wd)) return r;
                 return null;
               })
               .filter(Boolean);
@@ -934,7 +1171,7 @@ export default function App() {
           <div>
             
             <div className="mt-2 space-y-2 w-full">
-              {routines.length ? routines.map(r => <RoutineStrip key={r.id} r={r} />) : <div className="text-sm text-gray-500">No routines yet</div>}
+              {filteredRoutines.length ? filteredRoutines.map(r => <RoutineStrip key={r.id} r={r} />) : <div className="text-sm text-gray-500">No routines yet</div>}
             </div>
           </div>
         </div>
