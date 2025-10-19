@@ -829,7 +829,6 @@ function RoutineStickyView() {
     const todayMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
     const todayKey = iso(today);
 
-    // UI state
     const [entryText, setEntryText] = useState("");
     const [showPast, setShowPast] = useState(false);
     const [selectedDate, setSelectedDate] = useState(null);
@@ -838,6 +837,7 @@ function RoutineStickyView() {
     const [isPreviewVisible, setIsPreviewVisible] = useState(false);
     const [diarySearchResults, setDiarySearchResults] = useState([]);
     const [highlightTerm, setHighlightTerm] = useState("");
+    const [isAILoading, setIsAILoading] = useState(false);
 
     const thisMonthObj = diary[todayMonthKey] || {};
     const todaysEntries = (thisMonthObj && thisMonthObj[todayKey]) || [];
@@ -894,7 +894,6 @@ function RoutineStickyView() {
       setGrammarPreview(null);
     };
 
-    // build list of months
     const allDateKeys = [];
     Object.keys(diary).forEach(mk => {
       Object.keys(diary[mk]).forEach(dk => {
@@ -937,7 +936,6 @@ function RoutineStickyView() {
       }
     };
 
-    // Integrated search logic (from old version)
     const runDiarySearch = (term) => {
       const t = term.trim().toLowerCase();
       setHighlightTerm(t);
@@ -960,9 +958,7 @@ function RoutineStickyView() {
             const timeStr = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
             return (e.text || "").toLowerCase().includes(t) || timeStr.includes(t);
           });
-          if (matching.length) {
-            results.push({ monthKey: mk, dayKey: dk, entries: matching });
-          }
+          if (matching.length) results.push({ monthKey: mk, dayKey: dk, entries: matching });
         });
       });
       setDiarySearchResults(results);
@@ -974,7 +970,6 @@ function RoutineStickyView() {
     }, [searchTerm, diary]);
 
     const canEditDay = (dayKey) => dayKey === todayKey;
-
     const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     const renderEntryTextWithHighlight = (text, term) => {
@@ -1025,7 +1020,6 @@ function RoutineStickyView() {
               </div>
             )}
 
-            {/* Past Entries View */}
             {showPast && (
               <div className="space-y-3">
                 {searchTerm ? (
@@ -1073,6 +1067,7 @@ function RoutineStickyView() {
                 <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
                 <textarea value={entryText} onChange={e => setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
 
+                {/* Grammar correction preview panel (integrated) */}
                 {isPreviewVisible && grammarPreview && (
                   <div className="mt-4 bg-white border rounded p-4 shadow">
                     <div className="font-semibold mb-2">Grammar correction preview</div>
@@ -1106,11 +1101,7 @@ function RoutineStickyView() {
                 </div>
 
                 <div className="space-y-2">
-                  {((searchTerm && highlightTerm)
-                    ? (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).filter(e =>
-                        (e.text || "").toLowerCase().includes(highlightTerm))
-                    : (diary[selectedDate.monthKey]?.[selectedDate.dayKey] || [])
-                  ).map(e => (
+                  {(diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).map(e => (
                     <div key={e.id} className="bg-white p-3 rounded shadow">
                       <div className="text-sm">
                         {canEditDay(selectedDate.dayKey) ? (
@@ -1136,6 +1127,7 @@ function RoutineStickyView() {
       </div>
     );
   }
+
 
   function EditableEntry({ initialText, onSave, highlight }) {
     const [text, setText] = useState(initialText || "");
