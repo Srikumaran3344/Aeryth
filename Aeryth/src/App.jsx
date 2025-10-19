@@ -421,7 +421,7 @@ export default function App() {
       if (!r.days || !r.startTime) return;
       Object.keys(events).forEach((dayIso) => {
         const d = new Date(dayIso + "T00:00:00Z");
-        if (r.days.some((dd) => daysMap[dd] === d.getUTCDay())) {
+        if (r.days.some((dd) => daysMap[dd] === (d.getUTCDay()+1)%7)) {
           events[dayIso].push({
             routineId: r.id,
             name: r.name || "Routine",
