@@ -45,6 +45,7 @@ Currently displays the new Entry and each entry is saved in the left side with t
 Change the Past entries into {today's date in this format 11 Oct 25}, that means the entries written on that day are mapped to this date, add a new button below the date "Past entries", when clicked the left side UI is still similar but it shows the dates of the other days before this entry arranged date wise (top is the most recent one) and when user clicks a date, it goes inside it showing the entrie sof that respective day, if tehre is no entry thenthat date is not available
 Remove the summarize button for user, this is a backend tast, that summarizes the entire days entries into a single new entry called Summary of the and added to that respective date at the top of all that days entry, this is auto updated daily after the day ends, so teh structure is :
 Today's Date
+New entry button
 Past Entries button
 |Entry one
 |entry two....
@@ -79,5 +80,4 @@ user can hover over the entry to delete the entry of required befor ethe day end
 Notes for me:
 for the user initial persona;lity foind the four type of tutors that user requires and get the prompt that can be used for them.
 
-
-Change the diary hierarchy, new chat to create new explore, date is one day ahead bacuse of utc and singapore timing can be solved by shnaging iso
+notification and calendar status bar and slso calendar should be untouched dfor the past dates, web extension needs two ore json manisfesta nd one mroe
