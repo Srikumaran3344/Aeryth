@@ -842,7 +842,8 @@ export default function App() {
               routineId: r.id,
               name: r.name || "Routine",
               color: r.color || "violet",
-              time: r.startTime,
+              startTime: r.startTime,
+              endTime: r.endTime,
               days: r.days,
             });
           }
@@ -1001,7 +1002,8 @@ export default function App() {
             <div className="mt-3 space-y-3">
               {(calendarEventsLocal[iso(calendarDate)] || []).map((ev, idx) => {
                 const local = editBuffer[ev.routineId] || {};
-                const currentTime = local.startTime ?? ev.time ?? "";
+                const currentTime = local.startTime ?? ev.startTime ?? "";
+                const endTime = local.endTime ?? ev.endTime ?? "";
                 const currentDays = local.days ?? ev.days ?? [];
                 const dateIso = iso(calendarDate);
                 const inPast = isDateInPast(dateIso);
@@ -1065,10 +1067,10 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Time Input */}
+                      {/* Start Time Input */}
                       <div>
                         <label className="text-sm font-medium text-gray-600 block mb-1">
-                          Time
+                          Start Time
                         </label>
                         <input
                           type="time"
@@ -1077,6 +1079,25 @@ export default function App() {
                             handleLocalChange(
                               ev.routineId,
                               "startTime",
+                              e.target.value
+                            )
+                          }
+                          disabled={inPast}
+                          className="p-1 border rounded-lg text-sm"
+                        />
+                      </div>
+                      {/* End Time Input */}
+                      <div>
+                        <label className="text-sm font-medium text-gray-600 block mb-1">
+                          End Time
+                        </label>
+                        <input
+                          type="time"
+                          value={endTime}
+                          onChange={(e) =>
+                            handleLocalChange(
+                              ev.routineId,
+                              "endTime",
                               e.target.value
                             )
                           }
