@@ -836,7 +836,7 @@ export default function App() {
         Object.keys(events).forEach((dayIso) => {
           if (createdAtIso && dayIso < createdAtIso) return; // don't create events before createdAt
           const d = new Date(dayIso + "T00:00:00Z");
-          const weekDay = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][(d.getUTCDay()+1)%7];
+          const weekDay = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][(d.getUTCDay())];
           if (r.days.some((dd) => dd === weekDay)) {
             events[dayIso].push({
               routineId: r.id,
