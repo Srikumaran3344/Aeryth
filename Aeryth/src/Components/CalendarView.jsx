@@ -121,13 +121,13 @@ export default function CalendarView({
           </button>
         </div>
 
-        <div className="mx-auto w-100 h-[550px] flex justify-center">
+        <div className="mx-auto w-125 flex justify-center">
           <Calendar
             onChange={setCalendarDate}
             value={calendarDate}
             activeStartDate={calendarViewMonth}
             onActiveStartDateChange={onActiveStartDateChange}
-            className="w-full h-full border bg-white border-gray-200 rounded-lg shadow-lg"
+            className="w-full h-full justify-center border bg-white border-gray-200 rounded-lg shadow-lg"
             prevLabel={null}
             nextLabel={null}
             prev2Label={null}
@@ -139,7 +139,7 @@ export default function CalendarView({
               const shown = ev.slice(0, 2);
               const remaining = ev.length - shown.length;
               return (
-                <div className="mt-1 space-y-0">
+                <div className="mt-1 space-y-0.25">
                   {shown.map((e, i) => (
                     <div key={i} className={`text-[10px] truncate rounded-sm px-1 ${e.color === "violet" ? "bg-violet-500 text-white" : e.color === "green" ? "bg-green-400 text-white" : e.color === "rose" ? "bg-rose-400 text-white" : "bg-amber-400 text-black"}`}>
                       {e.name}

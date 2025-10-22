@@ -59,7 +59,7 @@ export default function Sidebar({
             </div>
           </div>
         ) : (
-          <div className="text-sm text-gray-500 italic mt-2">No more work today 🎉</div>
+          <div className="text-sm text-gray-500 italic mt-2">No more work today</div>
         )}
       </div>
 
