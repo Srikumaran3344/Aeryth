@@ -7,7 +7,6 @@ import RoutineStickyView from "./Components/RoutineStickyView";
 import SetGoalPanel from "./Components/SetGoalPanel";
 import SettingsPanel from "./Components/SettingsPanel";
 import Sidebar from "./Components/Sidebar";
-import TopPills from "./Components/shared/TopPills";
 import SidebarToggle from "./Components/shared/SidebarToggle";
 
 import { loadAsync, saveAsync } from "./utils/storage";

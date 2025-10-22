@@ -121,13 +121,13 @@ export default function CalendarView({
           </button>
         </div>
 
-        <div className="mx-auto w-full h-[550px] flex justify-center">
+        <div className="mx-auto w-100 h-[550px] flex justify-center">
           <Calendar
             onChange={setCalendarDate}
             value={calendarDate}
             activeStartDate={calendarViewMonth}
             onActiveStartDateChange={onActiveStartDateChange}
-            className="w-full h-full border border-gray-200 rounded-lg shadow-lg"
+            className="w-full h-full border bg-white border-gray-200 rounded-lg shadow-lg"
             prevLabel={null}
             nextLabel={null}
             prev2Label={null}
