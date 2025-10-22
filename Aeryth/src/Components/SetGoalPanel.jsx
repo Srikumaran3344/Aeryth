@@ -1,5 +1,6 @@
 // src/components/SetGoalPanel.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { ensureEndAfterStart } from "../utils/helpers";
 
 export default function SetGoalPanel({ addRoutine, setCurrentView, setSelectedRoutineId }) {
   const [name, setName] = useState("");
@@ -8,6 +9,16 @@ export default function SetGoalPanel({ addRoutine, setCurrentView, setSelectedRo
   const [endTime, setEndTime] = useState("10:00");
   const [days, setDays] = useState([]);
   const availableDays = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+  // whenever startTime changes and it's after endTime, adjust endTime immediately (+10min except after 23:50)
+  useEffect(() => {
+    if (!startTime) return;
+    // use helper to compute corrected end
+    const corrected = ensureEndAfterStart(startTime, endTime);
+    if (corrected !== endTime) setEndTime(corrected);
+  }, [startTime]); // eslint-disable-line
+
+
   const toggleDay = (d) => setDays(prev => prev.includes(d) ? prev.filter(x=>x!==d) : [...prev,d]);
 
   const handleSave = () => {
