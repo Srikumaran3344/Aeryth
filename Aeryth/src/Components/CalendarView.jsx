@@ -1,7 +1,7 @@
 // src/components/CalendarView.jsx
 import React, { useEffect, useState } from "react";
 import Calendar from "react-calendar";
-import { iso, fmtShort, parseIsoToLocalDate, weekdayNameFromIso, ensureEndAfterStart } from "../utils/helpers";
+import { iso, fmtShort, weekdayNameFromIso, ensureEndAfterStart } from "../utils/helpers";
 import { saveAsync } from "../utils/storage";
 import { scheduleRoutineNotification } from "../utils/notifications";
 
@@ -151,7 +151,8 @@ export default function CalendarView({
             }}
           />
         </div>
-
+        
+        {/*event system*/}
         <div className="mt-8 bg-white p-4 rounded-xl shadow">
           <h3 className="font-semibold text-lg text-gray-800">Events on {fmtShort(new Date(calendarDate))}</h3>
           <div className="mt-3 space-y-3">

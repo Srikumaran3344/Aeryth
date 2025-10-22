@@ -1,5 +1,11 @@
 // src/utils/helpers.js
-export const iso = (d) => d.toISOString().slice(0, 10);
+export function iso(date) {
+  const d = new Date(date);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 export const fmtShort = (d) => `${String(d.getDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short" }).slice(0,3)} ${String(d.getFullYear()).slice(2)}`;
 
 // Parse YYYY-MM-DD into a Date in local timezone (avoid UTC parsing / timezone shift bug)
