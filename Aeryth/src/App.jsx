@@ -194,7 +194,7 @@ export default function App() {
     if (currentView === "calendar") return <CalendarView routines={routines} setRoutines={setRoutines} eventStatuses={eventStatuses} setEventStatus={setEventStatus} editBuffer={editBuffer} setEditBuffer={setEditBuffer} saveChanges={() => {}} hasChanges={(id) => !!editBuffer[id]} />;
     if (currentView === "diary") return <DiaryView diary={diary} addDiaryEntry={addDiaryEntry} deleteDiaryEntry={deleteDiaryEntry} updateDiaryEntry={updateDiaryEntry} generateMonthlySummaryIfMissing={generateMonthlySummaryIfMissing} />;
     if (currentView === "settings") return <SettingsPanel settings={settings} setSettings={setSettings} setCurrentView={setCurrentView} />;
-    return <ExploreView exploreBuffer={exploreBuffer} handleExploreSend={handleExploreSend} isAILoading={isAILoading} settings={settings} routines={routines} />;
+    return <ExploreView exploreBuffer={exploreBuffer} handleExploreSend={handleExploreSend} isAILoading={isAILoading} settings={settings} routines={routines} currentView={currentView} setCurrentView={setCurrentView} />;
   };
 
   // Sidebar props

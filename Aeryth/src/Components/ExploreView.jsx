@@ -1,7 +1,8 @@
 // src/components/ExploreView.jsx
 import React, { useState } from "react";
+import TopPills from "./shared/TopPills";
 
-export default function ExploreView({ exploreBuffer, handleExploreSend, isAILoading, settings, routines }) {
+export default function ExploreView({ exploreBuffer, handleExploreSend, isAILoading, settings, routines, currentView, setCurrentView }) {
   const [input, setInput] = useState("");
   return (
     <div className="flex-1 h-full p-6 overflow-auto">
@@ -21,6 +22,7 @@ export default function ExploreView({ exploreBuffer, handleExploreSend, isAILoad
         </div>
 
         <div className="pt-4 border-t bg-white p-4">
+          <TopPills view={currentView} setView={setCurrentView} />
           <form onSubmit={(e)=>{ e.preventDefault(); const v = input.trim(); if (!v) return; handleExploreSend(v); setInput(""); }} className="flex space-x-3">
             <input value={input} onChange={(e)=>setInput(e.target.value)} placeholder={isAILoading ? "Waiting..." : "Start exploring a new task..."} className="flex-1 p-3 border rounded-xl focus:ring-2 focus:ring-violet-400" />
             <button type="submit" className="px-6 py-3 rounded-xl font-bold bg-violet-500 text-white hover:bg-violet-600">Send</button>
