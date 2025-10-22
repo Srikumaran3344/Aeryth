@@ -10,6 +10,7 @@ export default function Sidebar({
   const [searchRoutines, setSearchRoutines] = useState("");
 
   const filteredRoutines = routines.filter(r => r.name?.toLowerCase().includes(searchRoutines.trim().toLowerCase()));
+  
 
   // Calculate upcoming event for today — if events remaining show next one else "No more work today"
   const todayIso = (d => d.toISOString().slice(0,10))(new Date());
@@ -40,9 +41,6 @@ export default function Sidebar({
           <p className="text-sm text-gray-500">Your daily rhythm</p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <SidebarToggle inside onClick={() => setCurrentView(v => v === "calendar" ? "explore" : "calendar")} />
-        </div>
       </div>
       <button onClick={handleNewChat} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Chat</button>
       <button onClick={() => setCurrentView("setGoal")} className="w-full mb-2 py-2 rounded-lg bg-violet-500 text-white font-bold">+ New Routine</button>

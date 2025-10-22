@@ -9,8 +9,12 @@ import SettingsPanel from "./Components/SettingsPanel";
 import Sidebar from "./Components/Sidebar";
 import TopPills from "./Components/shared/TopPills";
 import SidebarToggle from "./Components/shared/SidebarToggle";
+
 import { loadAsync, saveAsync } from "./utils/storage";
-import { iso } from "./utils/helpers";
+import { iso, fmtShort } from "./utils/helpers";
+import { callGeminiTemp, availableModel } from "./utils/ai";
+import { scheduleRoutineNotification } from "./utils/notifications";
+import { buildAndPersistProfileSummary } from "./utils/personalization";
 
 export default function App() {
   /* persisted state */
@@ -22,22 +26,26 @@ export default function App() {
   const [notifChats, setNotifChats] = useState({});
   const [profileSummary, setProfileSummary] = useState(null);
 
-  /* UI state */
+  /* ephemeral */
+  const [exploreBuffer, setExploreBuffer] = useState([]);
   const [currentView, setCurrentView] = useState("explore");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [selectedRoutineId, setSelectedRoutineId] = useState(null);
-  const [editingRoutine, setEditingRoutine] = useState(null);
-  const [menuOpenFor, setMenuOpenFor] = useState(null);
+  const [isAILoading, setIsAILoading] = useState(false);
 
-  /* calendar edit buffer */
+  const [menuOpenFor, setMenuOpenFor] = useState(null);
+  const [editingRoutine, setEditingRoutine] = useState(null);
+
+  /* Calendar local edit buffer */
   const [editBuffer, setEditBuffer] = useState({});
 
+  /* load persisted on mount */
   useEffect(() => {
     (async () => {
       const s = await loadAsync("aeryth_settings", { aerythTone: "Friendly", userInfo: "", routineCriteria: "" });
       setSettings(s);
       const r = await loadAsync("aeryth_routines", []);
-      // ensure createdAt typed as Date objects if string
+      // ensure createdAt typed
       r.forEach(rr => { if (rr && rr.createdAt && typeof rr.createdAt === "string") rr.createdAt = new Date(rr.createdAt); });
       setRoutines(r);
       setDiary(await loadAsync("aeryth_diary", {}));
@@ -48,23 +56,34 @@ export default function App() {
     })();
   }, []);
 
+  /* persisters */
   useEffect(() => { saveAsync("aeryth_settings", settings); }, [settings]);
-  useEffect(() => { saveAsync("aeryth_routines", routines.map(r => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : r.createdAt }))); }, [routines]);
   useEffect(() => { saveAsync("aeryth_diary", diary); }, [diary]);
   useEffect(() => { saveAsync("aeryth_stickies", stickies); }, [stickies]);
   useEffect(() => { saveAsync("aeryth_event_statuses", eventStatuses); }, [eventStatuses]);
   useEffect(() => { saveAsync("aeryth_notif_chats", notifChats); }, [notifChats]);
   useEffect(() => { saveAsync("aeryth_profile", profileSummary); }, [profileSummary]);
+  useEffect(() => { saveAsync("aeryth_routines", routines.map(r => ({ ...r, createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : r.createdAt }))); }, [routines]);
 
-  /* basic CRUD helpers (kept minimal here) */
-  const addRoutine = (r) => {
+  // helpers to mutate persisted arrays
+  const addRoutine = ({ name, description, startTime, endTime, days, color = "violet" }) => {
     const id = crypto.randomUUID();
     const now = new Date();
-    const rr = { ...r, id, createdAt: now };
-    setRoutines(prev => [rr, ...prev]);
+    const r = { id, name, description, startTime, endTime, days, color, createdAt: now };
+    setRoutines(prev => [r, ...prev]);
+    const prevD = iso(new Date(Date.now() - 86400000));
+    const curD = iso(new Date());
+    const nextD = iso(new Date(Date.now() + 86400000));
+    setStickies(prev => ({ ...prev, [id]: { dates: { [prevD]: { text: "", color }, [curD]: { text: "", color }, [nextD]: { text: "", color } } } }));
+    setEventStatuses(prev => ({ ...(prev || {}), [id]: { [curD]: "upcoming", [nextD]: "upcoming" } }));
+    // schedule notifications for upcoming few days
+    scheduleUpcomingNotificationsForRoutine(r);
     return id;
   };
-  const updateRoutine = (id, patch) => setRoutines(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const updateRoutine = (id, patch) => {
+    setRoutines(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+  };
   const removeRoutine = (id) => {
     setRoutines(prev => prev.filter(r => r.id !== id));
     setStickies(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -72,42 +91,144 @@ export default function App() {
     if (selectedRoutineId === id) { setSelectedRoutineId(null); setCurrentView("explore"); }
   };
 
-  /* event status setter */
-  const setEventStatus = (rid, dateIso, status) => {
-    setEventStatuses(prev => { const n = { ...(prev || {}) }; n[rid] = { ...(n[rid] || {}), [dateIso]: status }; return n; });
+  // stickies
+  const setStickyText = (rid, dayIso, text) => setStickies(prev => { const n = { ...prev }; n[rid] = n[rid] || { dates: {} }; n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), text } }; return n; });
+  const setStickyColor = (rid, dayIso, color) => setStickies(prev => { const n = { ...prev }; n[rid] = n[rid] || { dates: {} }; n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), color } }; return n; });
+
+  // diary helpers (same as earlier single-file implementation)
+  const addDiaryEntry = (text, onDate = null) => {
+    if (!text?.trim()) return;
+    const d = onDate ? new Date(onDate) : new Date();
+    const dayKey = iso(d);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    setDiary(prev => {
+      const n = { ...prev };
+      n[monthKey] = n[monthKey] || {};
+      n[monthKey][dayKey] = n[monthKey][dayKey] || [];
+      const head = n[monthKey][dayKey][0];
+      if (head && head.text === text && Math.abs(new Date(head.ts) - d) < 3000) {
+        return n;
+      }
+      n[monthKey][dayKey] = [{ id: crypto.randomUUID(), text, ts: d.toISOString() }, ...n[monthKey][dayKey]];
+      return n;
+    });
+  };
+  const deleteDiaryEntry = (monthKey, dayKey, entryId) => {
+    setDiary(prev => {
+      const n = { ...prev };
+      n[monthKey] = { ...(n[monthKey] || {}) };
+      n[monthKey][dayKey] = (n[monthKey][dayKey] || []).filter(x => x.id !== entryId);
+      return n;
+    });
+  };
+  const updateDiaryEntry = (monthKey, dayKey, entryId, newText) => {
+    setDiary(prev => {
+      const n = { ...prev };
+      if (!n[monthKey] || !n[monthKey][dayKey]) return prev;
+      n[monthKey] = { ...n[monthKey] };
+      n[monthKey][dayKey] = n[monthKey][dayKey].map(e => e.id === entryId ? { ...e, text: newText, editedAt: new Date().toISOString() } : e);
+      return n;
+    });
   };
 
-  /* Main content panel selection */
+  // monthly summary generation wrapper
+  const generateMonthlySummaryIfMissing = async (monthKey) => {
+    // Delegate to the diary component original logic (kept in the component), but we still expose this hook for that component to call.
+    // For modularization, we keep a simple no-op here. The DiaryView uses its own generator calling Gemini if present.
+    return;
+  };
+
+  // chat/explore
+  const [chatSessionId, setChatSessionId] = useState(0);
+  const handleNewChat = () => {
+    setChatSessionId(prev => prev + 1);
+    setExploreBuffer([]);
+    setIsAILoading(false);
+    setCurrentView("explore");
+  };
+  const handleExploreSend = async (text) => {
+    const currentSession = chatSessionId;
+    setIsAILoading(true);
+    const userMsg = { id: crypto.randomUUID(), role: "user", text };
+    setExploreBuffer(prev => [...prev, userMsg]);
+
+    const aiText = await callGeminiTemp("explore-temp", [...exploreBuffer, userMsg], settings, routines);
+    if (currentSession === chatSessionId) {
+      setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "aeryth", text: aiText }]);
+    }
+    setIsAILoading(false);
+  };
+
+  /* Event status helpers */
+  const setEventStatus = (rid, dateIso, status) => {
+    setEventStatuses(prev => { const n = { ...(prev || {}) }; n[rid] = n[rid] || {}; n[rid][dateIso] = status; return n; });
+  };
+
+  /* Notification scheduling helpers (short wrapper to schedule for next days) */
+  const scheduleUpcomingNotificationsForRoutine = (routine, daysAhead = 3) => {
+    const now = new Date();
+    for (let i = 0; i < daysAhead; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+      const dayIso = iso(d);
+      if (routine.createdAt && dayIso < iso(new Date(routine.createdAt))) continue;
+      // check if routine applies
+      const daysMap = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:0 };
+      const wd = d.getDay();
+      if (!routine.days || !routine.days.some(dd => daysMap[dd] === wd)) continue;
+      // schedule start and end notifications
+      scheduleRoutineNotification(routine, dayIso, "start", `${routine.name}: time to start.`);
+      scheduleRoutineNotification(routine, dayIso, "end", `${routine.name}: time's up — did you complete it?`);
+    }
+  };
+
+  /* Personalization helper */
+  const buildAndPersistProfileSummaryLocal = async () => {
+    const s = await buildAndPersistProfileSummary({ settings, routines, diary });
+    setProfileSummary(s);
+  };
+
+  /* Layout components wiring — keep UI same as original */
   const MainPanel = () => {
     if (currentView === "setGoal") return <SetGoalPanel addRoutine={addRoutine} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
-    if (currentView === "routineView" && selectedRoutineId) return <RoutineStickyView routines={routines} selectedRoutineId={selectedRoutineId} stickies={stickies} setStickyText={(rid,d,t)=>{ setStickies(prev=>{ const n={...prev}; n[rid]=n[rid]||{dates:{}}; n[rid].dates[d]= {...(n[rid].dates[d]||{}), text:t}; return n; }); }} setStickyColor={(rid,d,c)=>{ setStickies(prev=>{ const n={...prev}; n[rid]=n[rid]||{dates:{}}; n[rid].dates[d]= {...(n[rid].dates[d]||{}), color:c}; return n; }); }} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
-    if (currentView === "calendar") return <CalendarView routines={routines} setRoutines={setRoutines} eventStatuses={eventStatuses} setEventStatus={setEventStatus} editBuffer={editBuffer} setEditBuffer={setEditBuffer} saveChanges={(id)=>{ if (editBuffer[id]) { updateRoutine(id, editBuffer[id]); setEditBuffer(prev=>{ const n={...prev}; delete n[id]; return n; }); } }} hasChanges={(id)=>!!editBuffer[id]} />;
-    if (currentView === "diary") return <DiaryView diary={diary} addDiaryEntry={(t,d)=>{ /* lightweight */ const dd = d ? new Date(d) : new Date(); const mk = `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,"0")}`; const dk = iso(dd); setDiary(prev=>{ const n={...prev}; n[mk]=n[mk]||{}; n[mk][dk]=n[mk][dk]||[]; n[mk][dk]=[{id:crypto.randomUUID(), text:t, ts: new Date().toISOString()}, ...(n[mk][dk]||[])]; return n; }); }} deleteDiaryEntry={()=>{}} updateDiaryEntry={()=>{}} generateMonthlySummaryIfMissing={()=>{}} />;
+    if (currentView === "routineView" && selectedRoutineId) return <RoutineStickyView routines={routines} selectedRoutineId={selectedRoutineId} stickies={stickies} setStickyText={setStickyText} setStickyColor={setStickyColor} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
+    if (currentView === "calendar") return <CalendarView routines={routines} setRoutines={setRoutines} eventStatuses={eventStatuses} setEventStatus={setEventStatus} editBuffer={editBuffer} setEditBuffer={setEditBuffer} saveChanges={() => {}} hasChanges={(id) => !!editBuffer[id]} />;
+    if (currentView === "diary") return <DiaryView diary={diary} addDiaryEntry={addDiaryEntry} deleteDiaryEntry={deleteDiaryEntry} updateDiaryEntry={updateDiaryEntry} generateMonthlySummaryIfMissing={generateMonthlySummaryIfMissing} />;
     if (currentView === "settings") return <SettingsPanel settings={settings} setSettings={setSettings} setCurrentView={setCurrentView} />;
-    return <ExploreView exploreBuffer={[]} handleExploreSend={()=>{}} isAILoading={false} settings={settings} routines={routines} />;
+    return <ExploreView exploreBuffer={exploreBuffer} handleExploreSend={handleExploreSend} isAILoading={isAILoading} settings={settings} routines={routines} />;
+  };
+
+  // Sidebar props
+  const sidebarProps = {
+    routines,
+    setCurrentView,
+    handleNewChat,
+    setSelectedRoutineId,
+    addRoutine,
+    selectedRoutineId,
+    editingRoutine,
+    setEditingRoutine,
+    menuOpenFor,
+    setMenuOpenFor,
+    updateRoutine,
+    removeRoutine
   };
 
   return (
     <div className="flex h-screen w-full font-sans bg-gradient-to-br from-violet-50 to-fuchsia-50 antialiased">
       <div className={`flex-1 min-w-0 transition-all duration-300 ${isSidebarOpen ? "lg:w-[calc(100%-20rem)]" : "w-full"}`}>
-        {/* Top pills restored */}
-        <div className="p-4 bg-transparent border-b">
-          <TopPills view={currentView} setView={setCurrentView} />
-        </div>
-
-        {/* Main content */}
         <MainPanel />
       </div>
 
-      {/* Sidebar area */}
       <div className={`transition-all duration-300 ${isSidebarOpen ? "w-80" : "w-0"} flex-shrink-0 overflow-hidden`}>
-        {isSidebarOpen && <div className="w-80 h-full"><Sidebar routines={routines} setCurrentView={setCurrentView} handleNewChat={()=>{}} setSelectedRoutineId={setSelectedRoutineId} addRoutine={addRoutine} selectedRoutineId={selectedRoutineId} editingRoutine={editingRoutine} setEditingRoutine={setEditingRoutine} menuOpenFor={menuOpenFor} setMenuOpenFor={setMenuOpenFor} updateRoutine={updateRoutine} removeRoutine={removeRoutine} /></div>}
+        {isSidebarOpen && <div className="w-80 h-full"><Sidebar {...sidebarProps} /></div>}
       </div>
 
       {/* Floating toggle when sidebar closed */}
       {!isSidebarOpen && <div className="fixed right-4 top-6 z-50"><SidebarToggle inside onClick={() => setIsSidebarOpen(true)} /></div>}
       {/* When sidebar open show a small toggle near top-right to close */}
       {isSidebarOpen && <div className="fixed right-4 top-6 z-50"><SidebarToggle inside onClick={() => setIsSidebarOpen(false)} /></div>}
+   
     </div>
+    
   );
 }
