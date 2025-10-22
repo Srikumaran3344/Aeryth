@@ -132,6 +132,12 @@ export default function CalendarView({
             nextLabel={null}
             prev2Label={null}
             next2Label={null}
+            //highlight the current day
+            tileClassName={({ date, view }) => {
+              const dayIso = iso(date);
+              if (dayIso ===iso(new Date())) return "bg-violet-50 rounded-md border border-violet-300"; // highlight
+              return "";
+            }}
             tileContent={({ date }) => {
               const isoDay = iso(date);
               const ev = calendarEvents[isoDay] || [];

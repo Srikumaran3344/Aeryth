@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import CalendarView from "./Components/CalendarView";
 import DiaryView from "./Components/DiaryView";
 import ExploreView from "./Components/ExploreView";
@@ -10,8 +10,8 @@ import Sidebar from "./Components/Sidebar";
 import SidebarToggle from "./Components/shared/SidebarToggle";
 
 import { loadAsync, saveAsync } from "./utils/storage";
-import { iso, fmtShort } from "./utils/helpers";
-import { callGeminiTemp, availableModel } from "./utils/ai";
+import { iso } from "./utils/helpers";
+import { callGeminiTemp } from "./utils/ai";
 import { scheduleRoutineNotification } from "./utils/notifications";
 import { buildAndPersistProfileSummary } from "./utils/personalization";
 
@@ -37,6 +37,7 @@ export default function App() {
 
   /* Calendar local edit buffer */
   const [editBuffer, setEditBuffer] = useState({});
+  const [activeCalendarDate, setActiveCalendarDate] = useState(null); // ✅ remember scroll position / day
 
   /* load persisted on mount */
   useEffect(() => {
@@ -44,7 +45,6 @@ export default function App() {
       const s = await loadAsync("aeryth_settings", { aerythTone: "Friendly", userInfo: "", routineCriteria: "" });
       setSettings(s);
       const r = await loadAsync("aeryth_routines", []);
-      // ensure createdAt typed
       r.forEach(rr => { if (rr && rr.createdAt && typeof rr.createdAt === "string") rr.createdAt = new Date(rr.createdAt); });
       setRoutines(r);
       setDiary(await loadAsync("aeryth_diary", {}));
@@ -75,7 +75,6 @@ export default function App() {
     const nextD = iso(new Date(Date.now() + 86400000));
     setStickies(prev => ({ ...prev, [id]: { dates: { [prevD]: { text: "", color }, [curD]: { text: "", color }, [nextD]: { text: "", color } } } }));
     setEventStatuses(prev => ({ ...(prev || {}), [id]: { [curD]: "upcoming", [nextD]: "upcoming" } }));
-    // schedule notifications for upcoming few days
     scheduleUpcomingNotificationsForRoutine(r);
     return id;
   };
@@ -91,10 +90,23 @@ export default function App() {
   };
 
   // stickies
-  const setStickyText = (rid, dayIso, text) => setStickies(prev => { const n = { ...prev }; n[rid] = n[rid] || { dates: {} }; n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), text } }; return n; });
-  const setStickyColor = (rid, dayIso, color) => setStickies(prev => { const n = { ...prev }; n[rid] = n[rid] || { dates: {} }; n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), color } }; return n; });
+  const setStickyText = (rid, dayIso, text) =>
+    setStickies(prev => {
+      const n = { ...prev };
+      n[rid] = n[rid] || { dates: {} };
+      n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), text } };
+      return n;
+    });
 
-  // diary helpers (same as earlier single-file implementation)
+  const setStickyColor = (rid, dayIso, color) =>
+    setStickies(prev => {
+      const n = { ...prev };
+      n[rid] = n[rid] || { dates: {} };
+      n[rid].dates = { ...(n[rid].dates || {}), [dayIso]: { ...(n[rid].dates?.[dayIso] || {}), color } };
+      return n;
+    });
+
+  // diary helpers
   const addDiaryEntry = (text, onDate = null) => {
     if (!text?.trim()) return;
     const d = onDate ? new Date(onDate) : new Date();
@@ -105,13 +117,12 @@ export default function App() {
       n[monthKey] = n[monthKey] || {};
       n[monthKey][dayKey] = n[monthKey][dayKey] || [];
       const head = n[monthKey][dayKey][0];
-      if (head && head.text === text && Math.abs(new Date(head.ts) - d) < 3000) {
-        return n;
-      }
+      if (head && head.text === text && Math.abs(new Date(head.ts) - d) < 3000) return n;
       n[monthKey][dayKey] = [{ id: crypto.randomUUID(), text, ts: d.toISOString() }, ...n[monthKey][dayKey]];
       return n;
     });
   };
+
   const deleteDiaryEntry = (monthKey, dayKey, entryId) => {
     setDiary(prev => {
       const n = { ...prev };
@@ -120,6 +131,7 @@ export default function App() {
       return n;
     });
   };
+
   const updateDiaryEntry = (monthKey, dayKey, entryId, newText) => {
     setDiary(prev => {
       const n = { ...prev };
@@ -130,13 +142,6 @@ export default function App() {
     });
   };
 
-  // monthly summary generation wrapper
-  const generateMonthlySummaryIfMissing = async (monthKey) => {
-    // Delegate to the diary component original logic (kept in the component), but we still expose this hook for that component to call.
-    // For modularization, we keep a simple no-op here. The DiaryView uses its own generator calling Gemini if present.
-    return;
-  };
-
   // chat/explore
   const [chatSessionId, setChatSessionId] = useState(0);
   const handleNewChat = () => {
@@ -145,12 +150,12 @@ export default function App() {
     setIsAILoading(false);
     setCurrentView("explore");
   };
+
   const handleExploreSend = async (text) => {
     const currentSession = chatSessionId;
     setIsAILoading(true);
     const userMsg = { id: crypto.randomUUID(), role: "user", text };
     setExploreBuffer(prev => [...prev, userMsg]);
-
     const aiText = await callGeminiTemp("explore-temp", [...exploreBuffer, userMsg], settings, routines);
     if (currentSession === chatSessionId) {
       setExploreBuffer(prev => [...prev, { id: crypto.randomUUID(), role: "aeryth", text: aiText }]);
@@ -158,50 +163,45 @@ export default function App() {
     setIsAILoading(false);
   };
 
-  /* Event status helpers */
   const setEventStatus = (rid, dateIso, status) => {
-    setEventStatuses(prev => { const n = { ...(prev || {}) }; n[rid] = n[rid] || {}; n[rid][dateIso] = status; return n; });
+    setEventStatuses(prev => {
+      const n = { ...(prev || {}) };
+      n[rid] = n[rid] || {};
+      n[rid][dateIso] = status;
+      return n;
+    });
   };
 
-  /* Notification scheduling helpers (short wrapper to schedule for next days) */
   const scheduleUpcomingNotificationsForRoutine = (routine, daysAhead = 3) => {
     const now = new Date();
     for (let i = 0; i < daysAhead; i++) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
       const dayIso = iso(d);
       if (routine.createdAt && dayIso < iso(new Date(routine.createdAt))) continue;
-      // check if routine applies
       const daysMap = { Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:0 };
       const wd = d.getDay();
       if (!routine.days || !routine.days.some(dd => daysMap[dd] === wd)) continue;
-      // schedule start and end notifications
       scheduleRoutineNotification(routine, dayIso, "start", `${routine.name}: time to start.`);
       scheduleRoutineNotification(routine, dayIso, "end", `${routine.name}: time's up — did you complete it?`);
     }
   };
 
-  /* Personalization helper */
   const buildAndPersistProfileSummaryLocal = async () => {
     const s = await buildAndPersistProfileSummary({ settings, routines, diary });
     setProfileSummary(s);
   };
 
-  /* Layout components wiring — keep UI same as original */
-  const MainPanel = () => {
-    if (currentView === "setGoal") return <SetGoalPanel addRoutine={addRoutine} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
-    if (currentView === "routineView" && selectedRoutineId) return <RoutineStickyView routines={routines} selectedRoutineId={selectedRoutineId} stickies={stickies} setStickyText={setStickyText} setStickyColor={setStickyColor} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
-    if (currentView === "calendar") return <CalendarView routines={routines} setRoutines={setRoutines} eventStatuses={eventStatuses} setEventStatus={setEventStatus} editBuffer={editBuffer} setEditBuffer={setEditBuffer} saveChanges={() => {}} hasChanges={(id) => !!editBuffer[id]} />;
-    if (currentView === "diary") return <DiaryView diary={diary} addDiaryEntry={addDiaryEntry} deleteDiaryEntry={deleteDiaryEntry} updateDiaryEntry={updateDiaryEntry} generateMonthlySummaryIfMissing={generateMonthlySummaryIfMissing} />;
-    if (currentView === "settings") return <SettingsPanel settings={settings} setSettings={setSettings} setCurrentView={setCurrentView} />;
-    return <ExploreView exploreBuffer={exploreBuffer} handleExploreSend={handleExploreSend} isAILoading={isAILoading} settings={settings} routines={routines} currentView={currentView} setCurrentView={setCurrentView} />;
+
+  const openRoutineView = (id) => {
+    setSelectedRoutineId(id);
+    setCurrentView("routineView");
   };
 
-  // Sidebar props
   const sidebarProps = {
     routines,
     setCurrentView,
     handleNewChat,
-    setSelectedRoutineId,
+    setSelectedRoutineId: openRoutineView,
     addRoutine,
     selectedRoutineId,
     editingRoutine,
@@ -212,22 +212,76 @@ export default function App() {
     removeRoutine
   };
 
+  const MainPanel = useMemo(() => {
+    switch (currentView) {
+      case "setGoal":
+        return <SetGoalPanel addRoutine={addRoutine} setCurrentView={setCurrentView} setSelectedRoutineId={setSelectedRoutineId} />;
+      case "routineView":
+        return selectedRoutineId ? (
+          <RoutineStickyView
+            routines={routines}
+            selectedRoutineId={selectedRoutineId}
+            stickies={stickies}
+            setStickyText={setStickyText}
+            setStickyColor={setStickyColor}
+            setCurrentView={setCurrentView}
+            setSelectedRoutineId={setSelectedRoutineId}
+          />
+        ) : null;
+      case "calendar":
+        return (
+          <CalendarView
+            routines={routines}
+            setRoutines={setRoutines}
+            eventStatuses={eventStatuses}
+            setEventStatus={setEventStatus}
+            editBuffer={editBuffer}
+            setEditBuffer={setEditBuffer}
+            activeCalendarDate={activeCalendarDate}
+            setActiveCalendarDate={setActiveCalendarDate}
+            saveChanges={() => {}}
+            hasChanges={(id) => !!editBuffer[id]}
+          />
+        );
+      case "diary":
+        return (
+          <DiaryView
+            diary={diary}
+            addDiaryEntry={addDiaryEntry}
+            deleteDiaryEntry={deleteDiaryEntry}
+            updateDiaryEntry={updateDiaryEntry}
+            generateMonthlySummaryIfMissing={() => {}}
+          />
+        );
+      case "settings":
+        return <SettingsPanel settings={settings} setSettings={setSettings} setCurrentView={setCurrentView} />;
+      default:
+        return (
+          <ExploreView
+            exploreBuffer={exploreBuffer}
+            handleExploreSend={handleExploreSend}
+            isAILoading={isAILoading}
+            settings={settings}
+            routines={routines}
+            currentView={currentView}
+            setCurrentView={setCurrentView}
+          />
+        );
+    }
+  }, [currentView, selectedRoutineId, routines, stickies, editBuffer, activeCalendarDate, exploreBuffer, isAILoading, settings,diary]);
+
   return (
     <div className="flex h-screen w-full font-sans bg-gradient-to-br from-violet-50 to-fuchsia-50 antialiased">
       <div className={`flex-1 min-w-0 transition-all duration-300 ${isSidebarOpen ? "lg:w-[calc(100%-20rem)]" : "w-full"}`}>
-        <MainPanel />
+        {MainPanel}
       </div>
 
       <div className={`transition-all duration-300 ${isSidebarOpen ? "w-80" : "w-0"} flex-shrink-0 overflow-hidden`}>
         {isSidebarOpen && <div className="w-80 h-full"><Sidebar {...sidebarProps} /></div>}
       </div>
 
-      {/* Floating toggle when sidebar closed */}
       {!isSidebarOpen && <div className="fixed right-4 top-6 z-50"><SidebarToggle inside onClick={() => setIsSidebarOpen(true)} /></div>}
-      {/* When sidebar open show a small toggle near top-right to close */}
       {isSidebarOpen && <div className="fixed right-4 top-6 z-50"><SidebarToggle inside onClick={() => setIsSidebarOpen(false)} /></div>}
-   
     </div>
-    
   );
 }
