@@ -137,8 +137,3 @@ chrome.notifications.onClosed.addListener(async (notificationId, byUser) => {
     console.error("onClosed handler error", e);
   }
 });
-
-chrome.action.onClicked.addListener(() => {
-  chrome.tabs.create({ url: "index.html" });
-});
-

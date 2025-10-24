@@ -1,6 +1,9 @@
 // src/utils/storage.js
 // Async storage wrapper using chrome.storage.local when available else localStorage
-const isChromeStorage = typeof chrome !== "undefined" && chrome?.storage?.local;
+const isChromeStorage =
+  typeof chrome !== "undefined" &&
+  chrome?.storage?.local &&
+  chrome?.runtime?.id;
 
 export async function loadAsync(key, fallback) {
   if (isChromeStorage) {
