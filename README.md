@@ -1,12 +1,10 @@
 # Aeryth
 Chrome Built-in AI Challenge-2025, an anti-procrastination companion
 
+storage of the datat - not done, page resets on reload
 
-calendar satus bar has some errors - like the buttons and come earlier than expected
-also the upcoming events in the side bar must show only the next evenst ( not the evensts that are finished on the day)
-calendar does include tthe addition of routuune for the current day
-notification is not perfected
-add the usage of web extension by adding two more files
-seperate the code into different files
-diaryView,ExploreView,SetgoalView,CalendarView,Notifications, and the parent basics code in one file
-Customize the tone for aeryth.
+notifications - still the notification with buttons are not visible
+
+personalisation and notification chat
+
+extra - create timer with pause end and start keys whose data is used for statistical view of user performance ( can be done in the extension)
