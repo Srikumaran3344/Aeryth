@@ -29,9 +29,9 @@ export default function SetGoalPanel({ addRoutine, setCurrentView, setSelectedRo
   };
 
   return (
-    <div className="flex-1 h-full p-6 overflow-auto">
-      <div className="max-w-2xl mx-auto">
-        <div className="bg-white p-6 rounded-xl shadow">
+    <div className="flex items-center justify-center h-full p-6 overflow-auto ">
+      <div className="max-w-2xl w-full mx-auto ">
+        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
           <h2 className="text-2xl font-bold text-violet-700 mb-4">Create Routine</h2>
 
           <div className="space-y-4">
