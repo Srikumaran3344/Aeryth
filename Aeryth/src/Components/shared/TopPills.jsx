@@ -11,7 +11,7 @@ export default function TopPills({ view, setView }) {
 
       <button onClick={() => setView("setGoal")}
         className={`flex-1 px-4 py-2 rounded-full text-sm font-semibold transition shadow-md ${view === "setGoal" ? "bg-violet-500 text-white" : "bg-gray-100 hover:bg-violet-100"}`}>
-        Set Goal
+        Set Routine
       </button>
 
       <button onClick={() => setView("diary")}

@@ -10,8 +10,8 @@ export default function SettingsPanel({ settings, setSettings, setCurrentView })
     setCurrentView("explore");
   };
   return (
-    <div className="flex-1 h-full p-6 overflow-auto">
-      <div className="max-w-2xl mx-auto">
+    <div className="flex items-center justify-center h-full p-6 overflow-auto">
+      <div className="max-w-2xl w-full mx-auto">
         <div className="bg-white p-6 rounded-xl shadow">
           <h2 className="text-2xl font-bold text-violet-700 mb-3">Aeryth Settings</h2>
           <div className="space-y-4">

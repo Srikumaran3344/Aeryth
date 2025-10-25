@@ -169,18 +169,18 @@ export default function DiaryView({ diary, addDiaryEntry, deleteDiaryEntry, upda
   };
 
   return (
-    <div className="flex-1 h-full p-6 overflow-auto">
-      <div className="max-w-4xl mx-auto flex">
-        <div className="w-1/3 bg-white/80 p-4 border-r h-[80vh] overflow-auto">
+    <div className="flex-1 h-full overflow-auto">
+      <div className="max-w-7xl flex">
+        <div className="w-23/100 bg-white/80 py-4 px-2 border-r h-[100vh] overflow-auto">
           <div className="flex items-center justify-between mb-3">
             <div><h3 className="font-bold text-violet-700">{fmtShort(today)}</h3></div>
           </div>
 
           <div className="mb-3">
             <button onClick={openNewEntry} className="w-full py-2 rounded bg-violet-500 text-white mb-2">New entry</button>
-            <div className="flex gap-2">
-              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search date / month / text / time" className="flex-1 p-2 border rounded" />
-              <button onClick={() => { setShowPast(s => !s); setSelectedDate(null); }} className="px-3 py-2 rounded bg-gray-100">{showPast ? "Back" : "Past Entries"}</button>
+            <div className="flex gap-1">
+              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search" className="flex-[3] min-w-0 p-2 border rounded" />
+              <button onClick={() => { setShowPast(s => !s); setSelectedDate(null); }} className="flex-[1] min-w-0 px-3 py-2 rounded bg-gray-100">{showPast ? "Back" : "Past Entries"}</button>
             </div>
           </div>
 
@@ -238,62 +238,120 @@ export default function DiaryView({ diary, addDiaryEntry, deleteDiaryEntry, upda
           )}
         </div>
 
-        <div className="flex-1 p-6 h-[80vh] overflow-auto">
-          {!selectedDate && (
-            <>
-              <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(today)}</h2>
-              <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
-              <textarea value={entryText} onChange={e => setEntryText(e.target.value)} className="w-full h-64 p-4 border rounded-lg resize-none" />
+    <div className="flex-1 p-6 h-[100vh] overflow-auto">
+      {!selectedDate && (
+        <>
+          <h2 className="text-2xl font-bold text-violet-700 mb-1">{fmtShort(today)}</h2>
+          <p className="text-sm text-gray-500 mb-4">What's on your mind?</p>
+          <textarea
+            value={entryText}
+            onChange={e => setEntryText(e.target.value)}
+            className="w-full h-64 p-4 border rounded-lg resize-none"
+          />
 
-              {isPreviewVisible && grammarPreview && (
-                <div className="mt-4 bg-white border rounded p-4 shadow">
-                  <div className="font-semibold mb-2">Grammar correction preview</div>
-                  <div className="whitespace-pre-wrap text-sm p-2 border rounded bg-gray-50" style={{ minHeight: 80 }}>{grammarPreview.correctedText}</div>
-                  <div className="flex gap-3 mt-3">
-                    <button onClick={acceptGrammarChanges} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Accept Changes</button>
-                    <button onClick={cancelGrammarPreview} className="flex-1 py-2 rounded-lg border">Back</button>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex gap-3 mt-4">
-                <button onClick={handleGrammarCheck} className="flex-1 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold">{isAILoadingLocal ? "..." : "Correct Grammar"}</button>
-                <button onClick={handleSave} className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold">Save Entry</button>
+          {/* Grammar correction preview */}
+          {isPreviewVisible && grammarPreview && (
+            <div className="mt-4 bg-white border rounded p-4 shadow">
+              <div className="font-semibold mb-2">Grammar correction preview</div>
+              <div
+                className="whitespace-pre-wrap text-sm p-2 border rounded bg-gray-50"
+                style={{ minHeight: 80 }}
+              >
+                {grammarPreview.correctedText}
               </div>
-            </>
+              <div className="flex gap-3 mt-3">
+                <button
+                  onClick={acceptGrammarChanges}
+                  className="flex-1 py-2 rounded-lg bg-violet-500 text-white font-bold"
+                >
+                  Accept Changes
+                </button>
+                <button
+                  onClick={() => {
+                    cancelGrammarPreview();
+                    setIsPreviewVisible(false);
+                  }}
+                  className="flex-1 py-2 rounded-lg border"
+                >
+                  Back
+                </button>
+              </div>
+            </div>
           )}
 
-          {selectedDate && (
-            <>
-              <div className="flex items-center gap-3 mb-3">
-                <button onClick={handleBack} className="px-3 py-2 rounded bg-gray-100">Back</button>
-                <h3 className="text-lg font-semibold">{new Date(selectedDate.dayKey).toLocaleDateString()}</h3>
-              </div>
+          {/* Show main buttons only when grammar window not visible */}
+          {!(isPreviewVisible && grammarPreview) && (
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={!isAILoadingLocal ? handleGrammarCheck : undefined}
+                disabled={isAILoadingLocal}
+                className={`flex-1 py-2 rounded-lg font-semibold ${
+                  isAILoadingLocal
+                    ? "bg-blue-100 text-blue-400 cursor-not-allowed"
+                    : "bg-blue-100 text-blue-800"
+                }`}
+              >
+                {isAILoadingLocal ? "..." : "Correct Grammar"}
+              </button>
 
-              <div className="bg-white p-4 rounded shadow mb-3">
-                <div className="font-bold">Summary (auto)</div>
-                <div className="text-sm text-gray-600 mt-2">
-                  {diary[selectedDate.monthKey]?.monthlySummary || "[Monthly/daily summary will appear here]"}
+              <button
+                onClick={!isAILoadingLocal ? handleSave : undefined}
+                disabled={isAILoadingLocal}
+                className={`flex-1 py-2 rounded-lg font-bold ${
+                  isAILoadingLocal
+                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                    : "bg-violet-500 text-white"
+                }`}
+              >
+                Save Entry
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {selectedDate && (
+        <>
+          <div className="flex items-center gap-3 mb-3">
+            <button onClick={handleBack} className="px-3 py-2 rounded bg-gray-100">Back</button>
+            <h3 className="text-lg font-semibold">
+              {new Date(selectedDate.dayKey).toLocaleDateString()}
+            </h3>
+          </div>
+
+          <div className="bg-white p-4 rounded shadow mb-3">
+            <div className="font-bold">Summary (auto)</div>
+            <div className="text-sm text-gray-600 mt-2">
+              {diary[selectedDate.monthKey]?.monthlySummary || "[Monthly/daily summary will appear here]"}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {(diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).map(e => (
+              <div key={e.id} className="bg-white p-3 rounded shadow">
+                <div className="text-sm">
+                  {canEditDay(selectedDate.dayKey) ? (
+                    <EditableEntry
+                      initialText={e.text}
+                      onSave={(newText) =>
+                        handleEditEntry(selectedDate.monthKey, selectedDate.dayKey, e.id, newText)
+                      }
+                    />
+                  ) : (
+                    <div>{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
+                  )}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
               </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
 
-              <div className="space-y-2">
-                {(diary[selectedDate.monthKey]?.[selectedDate.dayKey] || []).map(e => (
-                  <div key={e.id} className="bg-white p-3 rounded shadow">
-                    <div className="text-sm">
-                      {canEditDay(selectedDate.dayKey) ? (
-                        <EditableEntry initialText={e.text} onSave={(newText) => handleEditEntry(selectedDate.monthKey, selectedDate.dayKey, e.id, newText)} />
-                      ) : (
-                        <div>{renderEntryTextWithHighlight(e.text, highlightTerm)}</div>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-400 mt-1">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+
       </div>
     </div>
   );
