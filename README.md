@@ -25,3 +25,7 @@ v)since the notification shas buttons such as start, skip, snooze with two optio
 Now next is the UI of the extension- small rectangular pop up in the right top taht can be minimized to a button state in the side or opened to this box state, when opened it displays the current day events (upcoming events upto 3) when a event is clicked it displays the sticky note's current day write up only readable version and a back button. has buttons such as - calendar - renders the calendar (only the current month data wiyth the stripes of event in it) and a back button to the initial panel of events, and the other button is to open the web app
 
 When the notification is clicked directly it ipens the web application's calendar panel
+
+-first time opening aeryth has its setting pop up
+-formatting of text that aeryth sends to remove **
+-fall back for aeryth unavailable
