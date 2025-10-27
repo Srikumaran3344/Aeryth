@@ -13,7 +13,7 @@ export default function ExploreView({ exploreBuffer, handleExploreSend, isAILoad
           {exploreBuffer.map(m => (
             <div key={m.id} className={`${m.role==="user" ? "flex justify-end" : "flex justify-start"}`}>
               <div className={`${m.role==="user" ? "bg-violet-500 text-white" : m.role==="aeryth" ? "bg-white text-gray-800 border" : "bg-red-50 text-red-600"} inline-block px-4 py-2 rounded-2xl shadow`}>
-                <div className="whitespace-pre-wrap">{m.text}</div>
+                <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: m.text }}></div>
               </div>
             </div>
           ))}
