@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Aeryth (Procrastination Assistant)",
+  "version": "1.0.0",
+  "description": "Aeryth - personalized routines, diary and reminders",
+  "permissions": [
+    "storage",
+    "notifications",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Open Aeryth"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+  
+}
