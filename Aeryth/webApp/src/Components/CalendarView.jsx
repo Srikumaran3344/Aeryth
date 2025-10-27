@@ -1,5 +1,5 @@
 // src/components/CalendarView.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import Calendar from "react-calendar";
 import { iso, fmtShort, weekdayNameFromIso, ensureEndAfterStart } from "../utils/helpers";
 import { saveAsync } from "../utils/storage";
@@ -10,6 +10,80 @@ export default function CalendarView({
 }) {
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [calendarViewMonth, setCalendarViewMonth] = useState(new Date());
+  // Local mirror to force immediate UI updates for statuses
+  const [localStatuses, setLocalStatuses] = useState(eventStatuses || {});
+  const statusTimerRef = useRef(null);
+
+  // refs to keep latest values inside interval without re-creating it
+  const routinesRef = useRef(routines);
+  const localStatusesRef = useRef(localStatuses);
+
+  useEffect(() => { routinesRef.current = routines; }, [routines]);
+  useEffect(() => { localStatusesRef.current = localStatuses; }, [localStatuses]);
+
+  // sync prop -> local mirror when parent updates (initial load or external changes)
+  useEffect(() => {
+    setLocalStatuses(eventStatuses || {});
+  }, [eventStatuses]);
+
+  // Check every 5s and mark routines as in-progress when start time has passed for today's date.
+  useEffect(() => {
+    // clear any previous interval
+    if (statusTimerRef.current) {
+      clearInterval(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+
+    const tick = () => {
+      const now = new Date();
+      const nowIso = iso(now);
+      const updated = { ...(localStatusesRef.current || {}) };
+      let shouldSave = false;
+
+      // iterate all routines and update today's status when startTime passes
+      (routinesRef.current || []).forEach(r => {
+        if (!r || !r.startTime) return;
+        // skip if routine created in future
+        const createdAtIso = r.createdAt ? iso(new Date(r.createdAt)) : null;
+        if (createdAtIso && nowIso < createdAtIso) return;
+
+        // check if today is one of the routine days (weekday)
+        const wd = new Date().getDay(); // 0..6
+        const dayName = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][wd];
+        if (!r.days || !r.days.includes(dayName)) return;
+
+        const todayStatus = (updated[r.id] || {})[nowIso] || (eventStatuses[r.id] || {})[nowIso] || "upcoming";
+        // if already final state, skip
+        if (todayStatus === "completed" || todayStatus === "skipped" || todayStatus === "in-progress") return;
+
+        const [hh, mm] = (r.startTime || "00:00").split(":").map(Number);
+        const startDt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm);
+        if (now >= startDt) {
+          // mark in-progress
+          updated[r.id] = { ...(updated[r.id] || {}), [nowIso]: "in-progress" };
+          // update parent and mark to persist
+          setEventStatus(r.id, nowIso, "in-progress");
+          shouldSave = true;
+        }
+      });
+
+      if (shouldSave) {
+        setLocalStatuses(updated);
+        try { saveAsync("aeryth_event_statuses", updated); } catch (e) { /* ignore */ }
+      }
+    };
+
+    // run immediately then set interval
+    tick();
+    statusTimerRef.current = setInterval(tick, 5000);
+
+    return () => {
+      if (statusTimerRef.current) {
+        clearInterval(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
+    };
+  }, []); // empty deps: uses refs to access latest data
 
   const today = new Date();
   const currentMonth = today.getMonth();
@@ -228,17 +302,50 @@ export default function CalendarView({
                       <div className="text-sm text-gray-500">Status: <span className="font-semibold">{status}</span></div>
                     ) : (
                       <>
-                        {status === "upcoming" && !hasStartedTime && <div className="text-sm text-gray-500">Status: <span className="font-semibold">upcoming</span></div>}
-                        {status === "in-progress" && <div className="text-sm text-gray-500">Status: <span className="font-semibold">in-progress</span></div>}
-                        {status === "completed" && <div className="text-sm text-green-600 font-semibold">Status: completed</div>}
-                        {status === "skipped" && <div className="text-sm text-red-600 font-semibold">Status: skipped</div>}
+                        {/* show upcoming text only when start time not passed */}
+                        {status === "upcoming" && !hasStartedTime && (
+                          <div className="text-sm text-gray-500">Status: <span className="font-semibold">upcoming</span></div>
+                        )}
 
-                        {hasStartedTime && status !== "completed" && status !== "skipped" && (
+                        {/* When start time passes we want to show buttons even if parent hasn't re-rendered */}
+                        {(hasStartedTime || status === "in-progress") && status !== "completed" && status !== "skipped" && (
                           <div className="flex flex-col gap-2">
-                            <button onClick={() => { setEventStatus(ev.routineId, dateIso, "completed"); }} className="px-3 py-1 rounded bg-green-500 text-white">Completed</button>
-                            <button onClick={() => { setEventStatus(ev.routineId, dateIso, "skipped"); }} className="px-3 py-1 rounded bg-red-100 text-red-700 border">Skipped</button>
+                            <div className="text-sm text-gray-500">Status: <span className="font-semibold">{status === "in-progress" ? "in-progress" : "starting"}</span></div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  const updated = { ...(localStatusesRef.current || localStatuses) };
+                                  const newStatus = "completed";
+                                  updated[ev.routineId] = { ...(updated[ev.routineId] || {}), [dateIso]: newStatus };
+                                  setLocalStatuses(updated);
+                                  setEventStatus(ev.routineId, dateIso, newStatus);
+                                  try { saveAsync("aeryth_event_statuses", updated); } catch(e){/*ignore*/ }
+                                }}
+                                className="px-3 py-1 rounded bg-green-500 text-white"
+                              >
+                                Completed
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  const updated = { ...(localStatusesRef.current || localStatuses) };
+                                  const newStatus = "skipped";
+                                  updated[ev.routineId] = { ...(updated[ev.routineId] || {}), [dateIso]: newStatus };
+                                  setLocalStatuses(updated);
+                                  setEventStatus(ev.routineId, dateIso, newStatus);
+                                  try { saveAsync("aeryth_event_statuses", updated); } catch(e){/*ignore*/ }
+                                }}
+                                className="px-3 py-1 rounded bg-red-100 text-red-700 border"
+                              >
+                                Skipped
+                              </button>
+                            </div>
                           </div>
                         )}
+
+                        {/* show completed/skipped badges */}
+                        {status === "completed" && <div className="text-sm text-green-600 font-semibold">Status: completed</div>}
+                        {status === "skipped" && <div className="text-sm text-red-600 font-semibold">Status: skipped</div>}
                       </>
                     )}
                   </div>

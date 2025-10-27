@@ -29,4 +29,4 @@ When the notification is clicked directly it ipens the web application's calenda
 -first time opening aeryth has its setting pop up
 -formatting of text that aeryth sends to remove **
 -fall back for aeryth unavailable
-- continuous reloads erase data - can be solved either by wait time for saveasyncc, or ui that waits until all are loaded
+-send button in explore must be bloced when aeryth is thinking, block is removed in new chata nd the reply should be stopped, fall back must
