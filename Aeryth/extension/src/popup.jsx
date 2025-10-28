@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ensureDataFile, readJSONFile } from "./utils/fsStorage.js";
 
 const Popup = () => {
   const [data, setData] = useState(null);
@@ -9,18 +8,39 @@ const Popup = () => {
   useEffect(() => {
     (async () => {
       try {
-        const fileHandle = await ensureDataFile();
-        const json = await readJSONFile(fileHandle);
-        setData(json);
+        const res = await chrome.runtime.sendMessage({ type: "READ_DATA_ONCE" });
+        if (res?.ok && res.data) {
+          setData(res.data);
+        } else {
+          console.warn("Failed to load data:", res);
+        }
       } catch (e) {
-        console.error(e);
+        console.error("Error reading data from background:", e);
       }
     })();
   }, []);
 
-  if (!data) return <div className="loading">Loading...</div>;
+  if (!data) {
+    return (
+      <div
+        style={{
+          width: "270px",
+          height: "380px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "linear-gradient(180deg, #8b5cf6, #7c3aed)",
+          color: "white",
+          fontFamily: "system-ui",
+        }}
+      >
+        Loading...
+      </div>
+    );
+  }
 
   const upcoming = (data.routines || []).slice(0, 3);
+
   return (
     <div
       style={{
@@ -68,20 +88,35 @@ const Popup = () => {
         {view === "events" && (
           <>
             <h3 style={{ marginBottom: "8px" }}>Upcoming Events</h3>
-            {upcoming.map((r) => (
-              <div key={r.id} style={{ marginBottom: "8px", padding: "6px", background: "rgba(255,255,255,0.15)", borderRadius: "6px" }}>
-                <div style={{ fontWeight: 600 }}>{r.name}</div>
-                <div style={{ fontSize: "12px" }}>
-                  {r.startTime} - {r.endTime}
+            {upcoming.length > 0 ? (
+              upcoming.map((r) => (
+                <div
+                  key={r.id}
+                  style={{
+                    marginBottom: "8px",
+                    padding: "6px",
+                    background: "rgba(255,255,255,0.15)",
+                    borderRadius: "6px",
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{r.name}</div>
+                  <div style={{ fontSize: "12px" }}>
+                    {r.startTime} - {r.endTime}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <div style={{ fontSize: "12px", opacity: 0.7 }}>No upcoming events.</div>
+            )}
           </>
         )}
+
         {view === "settings" && (
           <div>
             <h3>Storage</h3>
-            <p style={{ fontSize: "12px", opacity: 0.8 }}>{data.settings?.storagePath || "No location chosen"}</p>
+            <p style={{ fontSize: "12px", opacity: 0.8 }}>
+              {data.settings?.storagePath || "Default internal storage"}
+            </p>
           </div>
         )}
       </div>
