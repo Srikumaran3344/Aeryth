@@ -6,6 +6,7 @@
   "permissions": [
     "storage",
     "notifications",
+    "fileSystem",
     "alarms"
   ],
   "host_permissions": ["<all_urls>"],

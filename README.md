@@ -27,6 +27,5 @@ Now next is the UI of the extension- small rectangular pop up in the right top t
 When the notification is clicked directly it ipens the web application's calendar panel
 
 -first time opening aeryth has its setting pop up
--formatting of text that aeryth sends to remove **
--fall back for aeryth unavailable
+-when firebase initialising the page should have loding icon with update and no other buttons are usable
 -send button in explore must be bloced when aeryth is thinking, block is removed in new chata nd the reply should be stopped, fall back must

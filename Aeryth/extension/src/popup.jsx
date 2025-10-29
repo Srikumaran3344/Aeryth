@@ -1,25 +1,87 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+// ✅ Try restoring saved file handle from chrome storage
+async function getSavedHandle() {
+  const { fileHandle } = await chrome.storage.local.get("fileHandle");
+  if (!fileHandle) return null;
+
+  try {
+    // Check permission first (if expired, return null)
+    const perm = await fileHandle.queryPermission({ mode: "read" });
+    if (perm === "granted") return fileHandle;
+    const req = await fileHandle.requestPermission({ mode: "readwrite" });
+    return req === "granted" ? fileHandle : null;
+  } catch {
+    return null;
+  }
+}
+
+// ✅ Ask user to choose the data.json file
+async function requestFile() {
+  const [handle] = await window.showOpenFilePicker({
+    types: [
+      {
+        description: "Aeryth Data",
+        accept: { "application/json": [".json"] },
+      },
+    ],
+  });
+  await chrome.storage.local.set({ fileHandle: handle });
+  return handle;
+}
+
+// ✅ Read JSON content
+async function readData(handle) {
+  const file = await handle.getFile();
+  const text = await file.text();
+  return text ? JSON.parse(text) : {};
+}
+
 const Popup = () => {
   const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
   const [view, setView] = useState("events");
 
+  // ---------- Initial setup ----------
   useEffect(() => {
     (async () => {
       try {
-        const res = await chrome.runtime.sendMessage({ type: "READ_DATA_ONCE" });
-        if (res?.ok && res.data) {
-          setData(res.data);
-        } else {
-          console.warn("Failed to load data:", res);
+        // Ask notification permission
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          setError("Notifications blocked. Enable them for reminders.");
         }
-      } catch (e) {
-        console.error("Error reading data from background:", e);
+
+        // Try to restore saved handle
+        let handle = await getSavedHandle();
+        if (!handle) {
+          setError("Please choose your Aeryth data file.");
+          return;
+        }
+
+        const json = await readData(handle);
+        setData(json);
+      } catch (err) {
+        console.error(err);
+        setError("Error reading saved file.");
       }
     })();
   }, []);
 
+  // ---------- File picker ----------
+  const chooseFile = async () => {
+    try {
+      const handle = await requestFile();
+      const json = await readData(handle);
+      setData(json);
+      setError(null);
+    } catch (err) {
+      setError("File selection cancelled or failed.");
+    }
+  };
+
+  // ---------- Loading or error ----------
   if (!data) {
     return (
       <div
@@ -27,18 +89,39 @@ const Popup = () => {
           width: "270px",
           height: "380px",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           background: "linear-gradient(180deg, #8b5cf6, #7c3aed)",
           color: "white",
           fontFamily: "system-ui",
+          textAlign: "center",
+          padding: "16px",
         }}
       >
-        Loading...
+        <p>{error || "Loading..."}</p>
+        {error && (
+          <button
+            onClick={chooseFile}
+            style={{
+              background: "white",
+              color: "#7c3aed",
+              padding: "6px 12px",
+              borderRadius: "6px",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+              marginTop: "8px",
+            }}
+          >
+            Choose File
+          </button>
+        )}
       </div>
     );
   }
 
+  // ---------- Main UI ----------
   const upcoming = (data.routines || []).slice(0, 3);
 
   return (
