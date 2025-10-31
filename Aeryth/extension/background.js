@@ -1,24 +1,57 @@
 // extension/background.js
-import { loadAsync, saveAsync } from "./utils/storage.js";
-import { ensureFirebaseAuth } from "./utils/firebaseInit.js";
-import { generateNotificationText } from "./utils/aiNotifications.js";
+// Service worker - NO Firebase imports here
 
 const NOTIF_META_PREFIX = "notif_meta_";
 const ACTIVE_META_PREFIX = "active_notif_meta_";
 const ALARM_PREFIX = "aeryth_";
 const SNOOZE_TRACKER_PREFIX = "snooze_count_";
 
-// ======================= Firebase Sync & Alarm Scheduling =======================
+console.log("🚀 Aeryth background script loaded");
 
-/** Sync routines from Firebase and schedule alarms */
+// ======================= Storage Helpers (Local Only) =======================
+
+async function loadLocal(key, fallback) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([key], (result) => {
+      resolve(result[key] ?? fallback);
+    });
+  });
+}
+
+async function saveLocal(key, value) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [key]: value }, resolve);
+  });
+}
+
+// ======================= Firebase Sync (Delegated to Offscreen) =======================
+
+/**
+ * Sync routines from Firebase via offscreen document
+ * Offscreen documents CAN use Firebase SDK properly
+ */
 async function syncAndScheduleAlarms() {
   try {
-    await ensureFirebaseAuth();
-    const routines = await loadAsync("aeryth_routines", []);
-    const settings = await loadAsync("aeryth_settings", { aerythTone: "Friendly" });
-    const profile = await loadAsync("aeryth_profile", "");
+    console.log("📅 Requesting sync from offscreen document...");
     
-    console.log("📅 Syncing routines from Firebase:", routines.length);
+    // Send message to offscreen document (or popup) to fetch Firebase data
+    const response = await chrome.runtime.sendMessage({ 
+      action: "fetchFirebaseData" 
+    }).catch(() => null);
+    
+    if (!response?.success) {
+      console.warn("Firebase sync unavailable, using cached data");
+      return await scheduleFromCachedData();
+    }
+    
+    const { routines, settings, profile } = response.data;
+    
+    // Cache locally for offline use
+    await saveLocal("cached_routines", routines);
+    await saveLocal("cached_settings", settings);
+    await saveLocal("cached_profile", profile);
+    
+    console.log("📅 Syncing routines:", routines.length);
     
     // Clear old alarms
     const allAlarms = await chrome.alarms.getAll();
@@ -27,7 +60,7 @@ async function syncAndScheduleAlarms() {
       await chrome.alarms.clear(alarm.name);
     }
     
-    // Schedule new alarms for upcoming days
+    // Schedule new alarms
     for (const routine of routines) {
       await scheduleAlarmsForRoutine(routine, 3);
       await scheduleEndAlarmsForRoutine(routine, 3);
@@ -39,7 +72,23 @@ async function syncAndScheduleAlarms() {
   }
 }
 
-/** Schedule start alarms for a routine (n days ahead) */
+async function scheduleFromCachedData() {
+  const routines = await loadLocal("cached_routines", []);
+  
+  const allAlarms = await chrome.alarms.getAll();
+  const aeryithAlarms = allAlarms.filter(a => a.name.startsWith(ALARM_PREFIX));
+  for (const alarm of aeryithAlarms) {
+    await chrome.alarms.clear(alarm.name);
+  }
+  
+  for (const routine of routines) {
+    await scheduleAlarmsForRoutine(routine, 3);
+    await scheduleEndAlarmsForRoutine(routine, 3);
+  }
+}
+
+// ======================= Alarm Scheduling =======================
+
 async function scheduleAlarmsForRoutine(routine, daysAhead = 3) {
   try {
     if (!routine || !routine.startTime) return;
@@ -79,7 +128,6 @@ async function scheduleAlarmsForRoutine(routine, daysAhead = 3) {
   }
 }
 
-/** Schedule end alarms for a routine */
 async function scheduleEndAlarmsForRoutine(routine, daysAhead = 3) {
   try {
     if (!routine || !routine.endTime) return;
@@ -120,28 +168,13 @@ async function scheduleEndAlarmsForRoutine(routine, daysAhead = 3) {
 
 // ======================= Notification Building =======================
 
-/** Build notification options with AI-generated text */
 async function buildNotificationOptions(meta, snoozeCount = 0) {
   if (!meta) return null;
   
-  const settings = await loadAsync("aeryth_settings", { aerythTone: "Friendly" });
-  const profile = await loadAsync("aeryth_profile", "");
-  const routines = await loadAsync("aeryth_routines", []);
-  const routine = routines.find(r => r.id === meta.routineId);
-  const notifChats = await loadAsync("aeryth_notif_chats", {});
-  const history = (notifChats[meta.routineId] || {})[meta.dateIso] || [];
+  const settings = await loadLocal("cached_settings", { aerythTone: "Friendly" });
   
-  // Generate personalized AI text
-  const aiText = await generateNotificationText({
-    type: meta.type,
-    routineName: meta.routineName,
-    routineDescription: meta.routineDescription || routine?.description,
-    tone: settings.aerythTone || "Friendly",
-    profile,
-    snoozeCount,
-    history,
-    userGoal: routine?.description
-  });
+  // Generate notification text (fallback templates since no AI in service worker)
+  const aiText = generateSimpleNotificationText(meta, settings.aerythTone, snoozeCount);
   
   if (meta.type === "start") {
     return {
@@ -190,19 +223,75 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
   return null;
 }
 
+// Simple notification text generator (no AI dependencies)
+function generateSimpleNotificationText(meta, tone, snoozeCount) {
+  const name = meta.routineName;
+  
+  if (meta.type === "start") {
+    if (snoozeCount >= 2) {
+      const messages = {
+        "Analyst (Logical)": `${name}: Action required now. Delays compound.`,
+        "Companion (Friendly)": `Hey! ${name} is waiting. Let's start together! 💪`,
+        "Coach (Motivational)": `${name} TIME! No more delays - START NOW!`,
+        "Sage (Wise)": `The moment for ${name} is now. Begin.`
+      };
+      return messages[tone] || messages["Companion (Friendly)"];
+    }
+    const messages = {
+      "Analyst (Logical)": `Time to start ${name}. Consistent execution yields results.`,
+      "Companion (Friendly)": `Hey! Ready to start ${name}? Let's do this! 💪`,
+      "Coach (Motivational)": `${name} time! Show up for yourself right now!`,
+      "Sage (Wise)": `${name} awaits. Small steps create lasting change.`
+    };
+    return messages[tone] || messages["Companion (Friendly)"];
+  }
+  
+  if (meta.type === "end") {
+    const messages = {
+      "Analyst (Logical)": `${name} period complete. Did you accomplish your objective?`,
+      "Companion (Friendly)": `Time's up for ${name}! How'd it go? 🌟`,
+      "Coach (Motivational)": `${name} done! Did you crush it?!`,
+      "Sage (Wise)": `${name} time has passed. Reflect on your effort.`
+    };
+    return messages[tone] || messages["Companion (Friendly)"];
+  }
+  
+  if (meta.type === "skip_motivation") {
+    const messages = {
+      "Analyst (Logical)": `Starting ${name} now increases your success probability. Reconsider?`,
+      "Companion (Friendly)": `I know it's tough, but ${name} will be worth it. Give it a try? 🙏`,
+      "Coach (Motivational)": `Don't quit on yourself! ${name} is your commitment. Start NOW!`,
+      "Sage (Wise)": `Every journey begins with a single step. ${name} calls to you.`
+    };
+    return messages[tone] || messages["Companion (Friendly)"];
+  }
+  
+  return `Time for ${name}!`;
+}
+
 // ======================= Event Handlers =======================
 
-chrome.runtime.onInstalled.addListener(async () => {
-  console.log("🚀 Aeryth background installed");
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log("🚀 Aeryth installed/updated", details.reason);
+  
+  // Test notification
+  chrome.notifications.create("aeryth-test", {
+    type: "basic",
+    iconUrl: "icons/icon48.png",
+    title: "Aeryth Installed",
+    message: "Notifications are working! ✓",
+    priority: 1
+  });
+  
   await syncAndScheduleAlarms();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  console.log("🚀 Aeryth background starting up");
+  console.log("🚀 Aeryth starting up");
   await syncAndScheduleAlarms();
 });
 
-// Periodic sync (every 30 minutes)
+// Periodic sync
 chrome.alarms.create("aeryth_sync", { periodInMinutes: 30 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -224,7 +313,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       return;
     }
     
-    // Get snooze count
     const snoozeKey = `${SNOOZE_TRACKER_PREFIX}${meta.routineId}_${meta.dateIso}`;
     const snoozeStore = await new Promise(res => chrome.storage.local.get([snoozeKey], res));
     const snoozeCount = snoozeStore[snoozeKey] || 0;
@@ -233,23 +321,19 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!options) return;
     
     const notifId = meta.notifId || `aeryth-notif-${Date.now()}`;
-    chrome.notifications.create(notifId, options, () => {
-      console.log(`🔔 Notification created: ${notifId}`);
+    chrome.notifications.create(notifId, options);
+    
+    await chrome.storage.local.set({ 
+      [`${ACTIVE_META_PREFIX}${notifId}`]: { ...meta, snoozeCount } 
     });
     
-    // Store active notification metadata
-    await new Promise(res => chrome.storage.local.set({ 
-      [`${ACTIVE_META_PREFIX}${notifId}`]: { ...meta, snoozeCount } 
-    }, res));
-    
-    // Log to notification chat
-    await logNotificationEvent(meta.routineId, meta.dateIso, "system", `Reminder sent: ${options.message}`);
+    console.log(`🔔 Notification created: ${notifId}`);
   } catch (e) {
     console.error("❌ onAlarm handler error", e);
   }
 });
 
-// ======================= Notification Button Clicks =======================
+// ======================= Notification Clicks =======================
 
 chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIndex) => {
   try {
@@ -278,15 +362,13 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
       action = actions[buttonIndex];
     }
     
-    console.log(`👆 Button clicked: ${action} for ${routineId} on ${dateIso}`);
+    console.log(`👆 Button clicked: ${action}`);
     
-    // Handle snooze actions
     if (action?.startsWith("snooze")) {
       const mins = parseInt(action.replace("snooze", ""));
       const newWhen = Date.now() + mins * 60000;
       const newSnoozeCount = snoozeCount + 1;
       
-      // Store updated snooze count
       await chrome.storage.local.set({ [snoozeKey]: newSnoozeCount });
       
       const newAlarmName = `${ALARM_PREFIX}snooze_${routineId}_${dateIso}_${newWhen}`;
@@ -294,51 +376,34 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
         ...meta, 
         notifId: `${notificationId}-snooze-${mins}`,
         snoozeCount: newSnoozeCount,
-        type: newSnoozeCount >= 2 ? "start" : "start" // Keep type but AI will adjust
+        type: "start"
       };
       
       await chrome.storage.local.set({ [`${NOTIF_META_PREFIX}${newAlarmName}`]: snoozeMeta });
       chrome.alarms.create(newAlarmName, { when: newWhen });
       
-      await logNotificationEvent(routineId, dateIso, "user", `Snoozed for ${mins} minutes`);
+      // Delegate logging to offscreen/popup
+      chrome.runtime.sendMessage({
+        action: "logNotification",
+        routineId,
+        dateIso,
+        text: `Snoozed for ${mins} minutes`
+      }).catch(() => {});
       
     } else if (action === "start") {
-      // User started the routine
-      await updateEventStatus(routineId, dateIso, "in-progress");
-      await logNotificationEvent(routineId, dateIso, "user", "Started");
-      
-      // Reset snooze count
       await chrome.storage.local.remove([snoozeKey]);
       
-      // Schedule end-time notification if not already scheduled
-      const routines = await loadAsync("aeryth_routines", []);
-      const routine = routines.find(r => r.id === routineId);
-      if (routine?.endTime) {
-        const [hh, mm] = routine.endTime.split(":").map(Number);
-        const endWhen = new Date(dateIso + "T" + routine.endTime + ":00").getTime();
-        
-        if (endWhen > Date.now()) {
-          const endAlarmName = `${ALARM_PREFIX}end_${routineId}_${dateIso}_${endWhen}`;
-          const endMeta = {
-            notifId: `aeryth-end-${routineId}-${dateIso}-${endWhen}`,
-            routineId,
-            routineName: routine.name,
-            dateIso,
-            type: "end",
-            when: endWhen
-          };
-          
-          await chrome.storage.local.set({ [`${NOTIF_META_PREFIX}${endAlarmName}`]: endMeta });
-          chrome.alarms.create(endAlarmName, { when: endWhen });
-        }
-      }
+      // Update status via offscreen
+      chrome.runtime.sendMessage({
+        action: "updateEventStatus",
+        routineId,
+        dateIso,
+        status: "in-progress"
+      }).catch(() => {});
       
     } else if (action === "skip") {
-      // First skip on start notification - send motivation
       if (type === "start" && snoozeCount === 0) {
-        await logNotificationEvent(routineId, dateIso, "user", "Skipped (1st time)");
-        
-        // Send immediate motivation notification
+        // Send motivation
         const motivationMeta = { 
           ...meta, 
           type: "skip_motivation",
@@ -347,29 +412,33 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
         
         const motivationOptions = await buildNotificationOptions(motivationMeta, 0);
         if (motivationOptions) {
-          chrome.notifications.create(motivationMeta.notifId, motivationOptions, () => {});
+          chrome.notifications.create(motivationMeta.notifId, motivationOptions);
           await chrome.storage.local.set({ 
             [`${ACTIVE_META_PREFIX}${motivationMeta.notifId}`]: motivationMeta 
           });
         }
       } else {
-        // Final skip - update status
-        await updateEventStatus(routineId, dateIso, "skipped");
-        await logNotificationEvent(routineId, dateIso, "user", "Skipped (final)");
-        
-        // Reset snooze count
         await chrome.storage.local.remove([snoozeKey]);
+        
+        chrome.runtime.sendMessage({
+          action: "updateEventStatus",
+          routineId,
+          dateIso,
+          status: "skipped"
+        }).catch(() => {});
       }
       
     } else if (action === "completed") {
-      await updateEventStatus(routineId, dateIso, "completed");
-      await logNotificationEvent(routineId, dateIso, "user", "Completed");
-      
-      // Reset snooze count
       await chrome.storage.local.remove([snoozeKey]);
+      
+      chrome.runtime.sendMessage({
+        action: "updateEventStatus",
+        routineId,
+        dateIso,
+        status: "completed"
+      }).catch(() => {});
     }
     
-    // Clear notification
     await chrome.storage.local.remove([metaKey]);
     chrome.notifications.clear(notificationId);
     
@@ -379,66 +448,16 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
 });
 
 chrome.notifications.onClosed.addListener(async (notificationId) => {
-  try {
-    const metaKey = `${ACTIVE_META_PREFIX}${notificationId}`;
-    await chrome.storage.local.remove([metaKey]);
-  } catch (e) {
-    console.warn("onClosed cleanup failed", e);
-  }
+  const metaKey = `${ACTIVE_META_PREFIX}${notificationId}`;
+  await chrome.storage.local.remove([metaKey]);
 });
 
-// ======================= Helper Functions =======================
-
-/** Update event status in Firebase */
-async function updateEventStatus(routineId, dateIso, status) {
-  try {
-    const eventStatuses = await loadAsync("aeryth_event_statuses", {});
-    eventStatuses[routineId] = eventStatuses[routineId] || {};
-    eventStatuses[routineId][dateIso] = status;
-    await saveAsync("aeryth_event_statuses", eventStatuses);
-    console.log(`✅ Updated status: ${routineId} on ${dateIso} → ${status}`);
-  } catch (e) {
-    console.error("updateEventStatus failed", e);
-  }
-}
-
-/** Log notification event to chat history */
-async function logNotificationEvent(routineId, dateIso, from, text) {
-  try {
-    const notifChats = await loadAsync("aeryth_notif_chats", {});
-    notifChats[routineId] = notifChats[routineId] || {};
-    notifChats[routineId][dateIso] = notifChats[routineId][dateIso] || [];
-    
-    notifChats[routineId][dateIso].push({
-      from,
-      text,
-      ts: new Date().toISOString()
-    });
-    
-    await saveAsync("aeryth_notif_chats", notifChats);
-  } catch (e) {
-    console.error("logNotificationEvent failed", e);
-  }
-}
-
-// Listen for messages from popup/content scripts
+// Listen for sync requests
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "syncNow") {
     syncAndScheduleAlarms().then(() => sendResponse({ success: true }));
-    return true; // Keep channel open for async response
+    return true;
   }
 });
 
-// background.js
-
-chrome.runtime.onInstalled.addListener(() => {
-  console.log("Service worker active ✅");
-
-  // Simple test notification
-  chrome.notifications.create("test", {
-    type: "basic",
-    iconUrl: "icons/icon48.png",
-    title: "Test Notification",
-    message: "If you see this, notifications work!",
-  });
-});
+console.log("✅ Aeryth background initialized");

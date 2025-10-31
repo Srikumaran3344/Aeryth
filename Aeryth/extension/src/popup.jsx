@@ -3,7 +3,78 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Loader2, X } from "lucide-react";
 import { auth, signInWithGoogleToken, signOutUser } from "./utils/firebaseInit.js";
-import { loadAsync } from "./utils/storage.js";
+import { loadAsync, saveAsync } from "./utils/storage.js";
+
+// ======================= Firebase Bridge for Background Worker =======================
+// This allows the service worker to request Firebase data since it can't import Firebase directly
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "fetchFirebaseData") {
+    handleFetchFirebaseData().then(sendResponse);
+    return true; // Keep channel open for async response
+  }
+  
+  if (message.action === "updateEventStatus") {
+    handleUpdateEventStatus(message).then(sendResponse);
+    return true;
+  }
+  
+  if (message.action === "logNotification") {
+    handleLogNotification(message).then(sendResponse);
+    return true;
+  }
+});
+
+async function handleFetchFirebaseData() {
+  try {
+    const routines = await loadAsync("aeryth_routines", []);
+    const settings = await loadAsync("aeryth_settings", { aerythTone: "Friendly" });
+    const profile = await loadAsync("aeryth_profile", "");
+    
+    return {
+      success: true,
+      data: { routines, settings, profile }
+    };
+  } catch (error) {
+    console.error("Firebase fetch failed:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function handleUpdateEventStatus({ routineId, dateIso, status }) {
+  try {
+    const eventStatuses = await loadAsync("aeryth_event_statuses", {});
+    eventStatuses[routineId] = eventStatuses[routineId] || {};
+    eventStatuses[routineId][dateIso] = status;
+    await saveAsync("aeryth_event_statuses", eventStatuses);
+    return { success: true };
+  } catch (error) {
+    console.error("Update status failed:", error);
+    return { success: false };
+  }
+}
+
+async function handleLogNotification({ routineId, dateIso, text }) {
+  try {
+    const notifChats = await loadAsync("aeryth_notif_chats", {});
+    notifChats[routineId] = notifChats[routineId] || {};
+    notifChats[routineId][dateIso] = notifChats[routineId][dateIso] || [];
+    
+    notifChats[routineId][dateIso].push({
+      from: "user",
+      text,
+      ts: new Date().toISOString()
+    });
+    
+    await saveAsync("aeryth_notif_chats", notifChats);
+    return { success: true };
+  } catch (error) {
+    console.error("Log notification failed:", error);
+    return { success: false };
+  }
+}
+
+// ======================= Utility Functions =======================
 
 // ✅ Correct local ISO date (prevents off-by-one day bug)
 function iso(date) {
@@ -15,6 +86,8 @@ const weekdayNameFromIso = (isoDate) => {
   const d = new Date(isoDate + "T12:00:00");
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
 };
+
+// ======================= Main Popup Component =======================
 
 const Popup = () => {
   const [user, setUser] = useState(null);
@@ -42,6 +115,11 @@ const Popup = () => {
       const routines = await loadAsync("aeryth_routines", []);
       const settings = await loadAsync("aeryth_settings", {});
       setData({ routines, settings });
+      
+      // Notify background worker to sync (optional - triggers alarm scheduling)
+      chrome.runtime.sendMessage({ action: "syncNow" }).catch(() => {
+        console.log("Background worker not ready yet");
+      });
     } catch (e) {
       console.error("Failed to load data", e);
       setError("Failed to load data from Firebase");
