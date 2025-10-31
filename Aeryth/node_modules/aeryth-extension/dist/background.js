@@ -1,6 +1,6 @@
 // extension/background.js
-import { loadAsync, saveAsync } from "/utils/storage.js";
-import { ensureFirebaseAuth } from "/utils/firebaseInit.js";
+import { loadAsync, saveAsync } from "./utils/storage.js";
+import { ensureFirebaseAuth } from "./utils/firebaseInit.js";
 
 
 const NOTIF_META_PREFIX = "notif_meta_";

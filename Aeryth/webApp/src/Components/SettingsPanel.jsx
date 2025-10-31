@@ -13,7 +13,7 @@ import { LogIn, LogOut, UserCircle2, HelpCircle } from "lucide-react";
 
 export default function SettingsPanel({ settings, setSettings, setCurrentView }) {
   const [form, setForm] = useState(
-    settings || { aerythTone: "Friendly", userInfo: "", routineCriteria: "" }
+    settings || { aerythTone: "Companion (Friendly)", userInfo: "", routineCriteria: "" }
   );
   const [user, setUser] = useState(null);
   const [authStatus, setAuthStatus] = useState("Loading...");
@@ -71,10 +71,10 @@ export default function SettingsPanel({ settings, setSettings, setCurrentView })
                 onChange={(e) => setForm({ ...form, aerythTone: e.target.value })}
                 className="w-full mt-1 p-3 border rounded-lg"
               >
-                <option>Friendly</option>
-                <option>Tough Love Coach</option>
-                <option>Gentle Assistant</option>
-                <option>Hyper-Logical Analyst</option>
+                <option>Companion (Friendly)</option>
+                <option>Analyst (Logical)</option>
+                <option>Coach (Motivational)</option>
+                <option>Sage (Wise)</option>
               </select>
             </div>
 

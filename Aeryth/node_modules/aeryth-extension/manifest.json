@@ -25,5 +25,12 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "oauth2": {
+    "client_id": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [ "email", "profile", "openid" ]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
   }
 }

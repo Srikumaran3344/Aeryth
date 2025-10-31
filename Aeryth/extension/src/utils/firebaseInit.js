@@ -1,20 +1,17 @@
 // src/utils/firebaseInit.js
-// ✅ Firebase initialization for Chrome Extension + Vite build
+// Uses Firebase ESM CDN (works in extension + Vite dev).
+// Exports: ensureFirebaseAuth, signInWithGoogleToken, signOutUser, auth, db
 
-import {
-  initializeApp
-} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getAuth,
-  signInAnonymously,
-  signInWithPopup,
+  signInWithCredential,
   GoogleAuthProvider,
+  signInAnonymously,
   onAuthStateChanged,
   signOut
-} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
-import {
-  getFirestore
-} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+} from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDDKEf908B2botxBpCAtJWtZJxq7ylaKY",
@@ -22,58 +19,65 @@ const firebaseConfig = {
   projectId: "aeryth01",
   storageBucket: "aeryth01.appspot.com",
   messagingSenderId: "789931924901",
-  appId: "1:789931924901:web:e09c529c4c814133ca9c4c",
+  appId: "1:789931924901:web:e09c529c4c814133ca9c4c"
 };
 
-const app = initializeApp(firebaseConfig);
+// Initialize app safely (multiple imports can happen in dev)
+let app;
+if (getApps().length > 0) {
+  try { app = getApp(); } catch { app = initializeApp(firebaseConfig); }
+} else {
+  app = initializeApp(firebaseConfig);
+}
+
 const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
 /**
- * ✅ Ensures Firebase user exists (anonymous fallback if needed)
+ * Ensure an authenticated user exists.
+ * Returns user (anonymous or real).
  */
 export async function ensureFirebaseAuth() {
   return new Promise((resolve, reject) => {
-    onAuthStateChanged(auth, async (user) => {
-      try {
+    try {
+      onAuthStateChanged(auth, async (user) => {
         if (user) return resolve(user);
-        const cred = await signInAnonymously(auth);
-        if (!cred || !cred.user) throw new Error("Anonymous sign-in failed");
-        resolve(cred.user);
-      } catch (err) {
-        console.error("ensureFirebaseAuth failed:", err);
-        reject(err);
-      }
-    });
+        // If no user, sign in anonymously for background safe ops
+        try {
+          const cred = await signInAnonymously(auth);
+          return resolve(cred.user);
+        } catch (e) {
+          return reject(e);
+        }
+      });
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
 /**
- * ✅ Sign in with Google
+ * Sign in to Firebase using a Google access token.
+ * This is used after chrome.identity returns an access token.
  */
-export async function signInWithGoogle() {
-  try {
-    const result = await signInWithPopup(auth, provider);
-    return result.user;
-  } catch (e) {
-    console.error("Google sign-in failed:", e);
-    throw e;
-  }
+export async function signInWithGoogleToken(accessToken) {
+  if (!accessToken) throw new Error("Missing accessToken");
+  const cred = GoogleAuthProvider.credential(null, accessToken);
+  const result = await signInWithCredential(auth, cred);
+  return result.user;
 }
 
 /**
- * ✅ Sign out (only if not anonymous)
+ * Sign out non-anonymous users (keeps anonymous fallback)
  */
 export async function signOutUser() {
   try {
-    const user = auth.currentUser;
-    if (user && !user.isAnonymous) {
-      await signOut(auth);
-    }
+    const u = auth.currentUser;
+    if (u && !u.isAnonymous) await signOut(auth);
   } catch (e) {
-    console.error("Sign out failed:", e);
+    console.warn("signOutUser failed", e);
   }
 }
 
-export { app, auth, db };
+export { auth, db, provider };

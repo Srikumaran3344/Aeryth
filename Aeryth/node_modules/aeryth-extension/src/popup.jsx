@@ -1,27 +1,37 @@
-// extension/popup.jsx
+// src/popup.jsx
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { X, Loader2 } from "lucide-react";
-import { auth, db, signInWithGoogle, signOutUser } from "/utils/firebaseInit.js";
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+import { Loader2, X } from "lucide-react";
+import { signInWithGoogleToken, signOutUser, auth } from "/utils/firebaseInit.js";
+import { loadAsync } from "/utils/storage.js";
+import { GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+
+function parseAccessTokenFromHash(hash) {
+  // #access_token=...&token_type=Bearer&state=...
+  const m = hash.replace(/^#/, "").split("&").find(p => p.startsWith("access_token"));
+  if (!m) return null;
+  return m.split("=")[1];
+}
 
 const Popup = () => {
   const [user, setUser] = useState(null);
   const [data, setData] = useState(null);
   const [view, setView] = useState("settings");
-  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Prevent accidental close
+  // keep popup from closing when losing focus (best-effort)
   useEffect(() => {
-    window.addEventListener("blur", () => window.focus());
+    const onBlur = () => window.focus();
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
   }, []);
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (u) => {
       if (u) {
         setUser(u);
-        await fetchUserData(u);
+        await fetchData();
       } else {
         setLoading(false);
       }
@@ -29,182 +39,133 @@ const Popup = () => {
     return () => unsub();
   }, []);
 
-  async function fetchUserData(u) {
+  async function fetchData() {
+    setLoading(true);
     try {
-      const ref = doc(db, "aeryth_data", u.uid);
-      const snap = await getDoc(ref);
-      if (snap.exists()) setData(snap.data());
-      else setData({ routines: [], settings: {} });
+      const routines = await loadAsync("aeryth_routines", []);
+      const settings = await loadAsync("aeryth_settings", {});
+      setData({ routines, settings });
     } catch (e) {
-      console.error(e);
-      setError("Failed to load data");
+      console.error("Failed to load data", e);
+      setError("Failed to load data from Firebase");
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSignIn() {
+  async function signInWithGoogle() {
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      const user = await signInWithGoogle();
+      const clientId = "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com";
+      const redirectUrl = chrome.identity.getRedirectURL();
+      const scope = encodeURIComponent("openid profile email");
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUrl)}&scope=${scope}`;
+
+      const responseUrl = await new Promise((resolve, reject) => {
+        chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, (redirectResponse) => {
+          if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+          resolve(redirectResponse);
+        });
+      });
+
+      const token = parseAccessTokenFromHash(new URL(responseUrl).hash);
+      if (!token) throw new Error("No access token returned");
+
+      // sign into firebase with the token
+      const user = await signInWithGoogleToken(token);
       setUser(user);
-      await fetchUserData(user);
+      await fetchData();
     } catch (e) {
-      console.error(e);
+      console.error("Google sign-in failed", e);
       setError("Sign-in failed. Please try again.");
+    } finally {
       setLoading(false);
     }
   }
 
   async function handleSignOut() {
+    setLoading(true);
     await signOutUser();
     setUser(null);
     setData(null);
     setView("settings");
+    setLoading(false);
   }
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center bg-gradient-to-b from-violet-500 to-violet-700 text-white rounded-xl w-[320px] h-[420px]">
-        <Loader2 className="animate-spin mb-2" size={28} />
-        <p>Loading Firebase...</p>
+      <div style={{ width: 320, height: 420, display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(180deg,#8b5cf6,#7c3aed)", color: "white", fontFamily: "system-ui" }}>
+        <div style={{ textAlign: "center" }}>
+          <Loader2 className="animate-spin" size={28} />
+          <div style={{ marginTop: 8 }}>Connecting to Firebase...</div>
+        </div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center bg-gradient-to-b from-violet-500 to-violet-700 text-white rounded-xl w-[320px] h-[420px] text-center p-4">
-        <h3 className="text-lg font-semibold mb-2">Welcome to Aeryth</h3>
-        <p className="text-sm opacity-80 mb-3">Sign in with Google to continue</p>
-        {error && <p className="text-red-200 text-xs mb-2">{error}</p>}
-        <button
-          onClick={handleSignIn}
-          className="bg-white text-violet-600 font-semibold rounded-lg px-4 py-2"
-        >
-          Sign in with Google
-        </button>
+      <div style={{ width: 320, height: 420, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(180deg,#8b5cf6,#7c3aed)", color: "white", fontFamily: "system-ui", textAlign: "center", padding: 16 }}>
+        <h3>Welcome to Aeryth</h3>
+        <p style={{ opacity: 0.85 }}>Sign in with Google to continue</p>
+        {error && <div style={{ color: "#ffd1d1" }}>{error}</div>}
+        <button onClick={signInWithGoogle} style={{ marginTop: 12, background: "white", color: "#7c3aed", padding: "8px 12px", borderRadius: 6, border: "none", fontWeight: 600 }}>Sign in with Google</button>
       </div>
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const upcoming = (data?.aeryth_routines || []).filter(r => r.date === today).slice(0, 3);
+  const todayIso = new Date().toISOString().slice(0,10);
+  const upcoming = (data?.routines || []).filter(r => r.date === todayIso).slice(0,3);
 
   return (
-    <div
-      style={{
-        width: 320,
-        height: 420,
-        background: "linear-gradient(180deg, #8b5cf6, #7c3aed)",
-        color: "white",
-        display: "flex",
-        borderRadius: 12,
-        overflow: "hidden",
-        fontFamily: "system-ui",
-        position: "relative",
-      }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          top: 6,
-          right: 6,
-          cursor: "pointer",
-        }}
-        onClick={() => window.close()}
-      >
+    <div style={{ width: 320, height: 420, background: "linear-gradient(180deg,#8b5cf6,#7c3aed)", color: "white", fontFamily: "system-ui", borderRadius: 12, overflow: "hidden", position: "relative" }}>
+      <div style={{ position: "absolute", top: 6, right: 6, cursor: "pointer" }} onClick={() => window.close()}>
         <X size={16} />
       </div>
 
-      {/* Sidebar */}
-      <div
-        style={{
-          width: 50,
-          background: "rgba(255,255,255,0.1)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "space-around",
-          padding: "6px 0",
-        }}
-      >
-        {[
-          ["📅", "Events", () => setView("events")],
-          ["🗓️", "Calendar", () => setView("calendar")],
-          ["⚙️", "Settings", () => setView("settings")],
-          ["🌐", "Web", () => chrome.tabs.create({ url: "https://aeryth01.web.app/" })],
-        ].map(([icon, title, onClick]) => (
-          <div
-            key={title}
-            onClick={onClick}
-            title={title}
-            style={{
-              cursor: "pointer",
-              fontSize: 18,
-              opacity: view === title.toLowerCase() ? 1 : 0.8,
-            }}
-          >
-            {icon}
-          </div>
-        ))}
-      </div>
+      <div style={{ display: "flex", height: "100%" }}>
+        <div style={{ width: 50, background: "rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-around", padding: "6px 0" }}>
+          {[
+            ["📅", "Events", () => setView("events")],
+            ["🗓️", "Calendar", () => setView("calendar")],
+            ["⚙️", "Settings", () => setView("settings")],
+            ["🌐", "Web", () => chrome.tabs.create({ url: "https://aeryth01.web.app/" })]
+          ].map(([icon, title, onClick]) => (
+            <div key={title} onClick={onClick} title={title} style={{ cursor: "pointer", fontSize: 18, opacity: view === title.toLowerCase() ? 1 : 0.8 }}>
+              {icon}
+            </div>
+          ))}
+        </div>
 
-      {/* Main content */}
-      <div style={{ flex: 1, padding: 10, overflowY: "auto" }}>
-        {view === "events" && (
-          <>
-            <h3>Today's Events</h3>
-            {upcoming.length ? (
-              upcoming.map((r) => (
-                <div
-                  key={r.id}
-                  style={{
-                    marginBottom: 8,
-                    padding: 6,
-                    background: "rgba(255,255,255,0.15)",
-                    borderRadius: 6,
-                  }}
-                >
+        <div style={{ flex: 1, padding: 10, overflowY: "auto" }}>
+          {view === "events" && (
+            <>
+              <h3>Today's Events</h3>
+              {upcoming.length ? upcoming.map(r => (
+                <div key={r.id} style={{ marginBottom: 8, padding: 6, background: "rgba(255,255,255,0.15)", borderRadius: 6 }}>
                   <div style={{ fontWeight: 600 }}>{r.name}</div>
                   <div style={{ fontSize: 12 }}>{r.startTime} - {r.endTime}</div>
                 </div>
-              ))
-            ) : (
-              <div style={{ fontSize: 12, opacity: 0.7 }}>No events today.</div>
-            )}
-          </>
-        )}
+              )) : <div style={{ fontSize: 12, opacity: 0.7 }}>No events today.</div>}
+            </>
+          )}
 
-        {view === "calendar" && (
-          <div>
-            <h3>Calendar</h3>
-            <p style={{ opacity: 0.8, fontSize: 12 }}>Calendar view coming soon.</p>
-          </div>
-        )}
+          {view === "calendar" && (
+            <div>
+              <h3>Calendar</h3>
+              <p style={{ opacity: 0.8, fontSize: 12 }}>Calendar view coming soon.</p>
+            </div>
+          )}
 
-        {view === "settings" && (
-          <div>
-            <h3>Settings</h3>
-            <p style={{ fontSize: 13, marginBottom: 6 }}>
-              Signed in as <b>{user.displayName}</b>
-            </p>
-            <button
-              onClick={handleSignOut}
-              style={{
-                background: "white",
-                color: "#7c3aed",
-                fontWeight: 600,
-                padding: "6px 12px",
-                border: "none",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
-            >
-              Sign out
-            </button>
-          </div>
-        )}
+          {view === "settings" && (
+            <div>
+              <h3>Settings</h3>
+              <p style={{ fontSize: 13, marginBottom: 6 }}>Signed in as <b>{user.displayName || user.email}</b></p>
+              <button onClick={handleSignOut} style={{ background: "white", color: "#7c3aed", fontWeight: 600, padding: "6px 12px", border: "none", borderRadius: 6, cursor: "pointer" }}>Sign out</button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
