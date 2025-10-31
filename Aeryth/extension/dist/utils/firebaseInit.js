@@ -5,7 +5,8 @@ import {
   signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
-  signOut
+  signOut,
+  signInWithPopup
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
@@ -44,3 +45,5 @@ export async function signOutUser() {
     console.warn("signOutUser failed", e);
   }
 }
+// We also need to export the function itself to be used in popup.jsx
+export { signInWithPopup };

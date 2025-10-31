@@ -26,10 +26,16 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+
   "oauth2": {
-    "client_id": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
-    "scopes": [ "email", "profile", "openid" ]
-  },
+  "client_id": "789931924901-pkvd1pnr21q6b6dol9nb86da25ti8d2l.apps.googleusercontent.com",
+  "scopes": [
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "email", "profile", "openid"
+  ]
+},
+
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   }

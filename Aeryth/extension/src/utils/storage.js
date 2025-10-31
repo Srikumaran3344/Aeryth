@@ -1,7 +1,6 @@
 // src/utils/storage.js
 import { auth, db } from "./firebaseInit.js";
 import { getDoc, setDoc, doc } from "firebase/firestore";
-
 let currentUser = null;
 let dataCache = null;
 let writeQueue = [];

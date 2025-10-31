@@ -33,4 +33,17 @@ export default defineConfig({
       },
     },
   },
+  rollupOptions: {
+    input: {
+      popup: resolve(__dirname, "src/popup.jsx"),
+      background: resolve(__dirname, "background.js"),
+    },
+    output: {
+      entryFileNames: "[name].js",
+    },
+  },
+  optimizeDeps: {
+    include: ["firebase/app", "firebase/auth", "firebase/firestore"],
+  },
+
 });
