@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Aeryth (Procrastination Assistant)",
   "version": "1.0.0",
-  "description": "Aeryth - personalized routines, diary and reminders",
+  "description": "Aeryth - personalized routines, diary and reminders with AI",
   "permissions": [
     "identity",
     "storage",
@@ -26,17 +26,17 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-
   "oauth2": {
-  "client_id": "789931924901-pkvd1pnr21q6b6dol9nb86da25ti8d2l.apps.googleusercontent.com",
-  "scopes": [
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile",
-    "email", "profile", "openid"
-  ]
-},
-
+    "client_id": "789931924901-pkvd1pnr21q6b6dol9nb86da25ti8d2l.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "email",
+      "profile",
+      "openid"
+    ]
+  },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 }
