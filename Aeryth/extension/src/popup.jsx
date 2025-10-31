@@ -2,15 +2,12 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Loader2, X } from "lucide-react";
-import { signInWithGoogleToken, signOutUser, auth } from "/utils/firebaseInit.js";
-import { loadAsync } from "/utils/storage.js";
-import { GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+import { auth, signInWithGoogleToken, signOutUser } from "./utils/firebaseInit.js";
+import { loadAsync } from "./utils/storage.js";
 
 function parseAccessTokenFromHash(hash) {
-  // #access_token=...&token_type=Bearer&state=...
   const m = hash.replace(/^#/, "").split("&").find(p => p.startsWith("access_token"));
-  if (!m) return null;
-  return m.split("=")[1];
+  return m ? m.split("=")[1] : null;
 }
 
 const Popup = () => {
@@ -20,21 +17,12 @@ const Popup = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // keep popup from closing when losing focus (best-effort)
-  useEffect(() => {
-    const onBlur = () => window.focus();
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
-  }, []);
-
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (u) => {
       if (u) {
         setUser(u);
         await fetchData();
-      } else {
-        setLoading(false);
-      }
+      } else setLoading(false);
     });
     return () => unsub();
   }, []);
@@ -61,24 +49,20 @@ const Popup = () => {
       const redirectUrl = chrome.identity.getRedirectURL();
       const scope = encodeURIComponent("openid profile email");
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUrl)}&scope=${scope}`;
-
       const responseUrl = await new Promise((resolve, reject) => {
         chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, (redirectResponse) => {
           if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
           resolve(redirectResponse);
         });
       });
-
       const token = parseAccessTokenFromHash(new URL(responseUrl).hash);
       if (!token) throw new Error("No access token returned");
-
-      // sign into firebase with the token
       const user = await signInWithGoogleToken(token);
       setUser(user);
       await fetchData();
     } catch (e) {
       console.error("Google sign-in failed", e);
-      setError("Sign-in failed. Please try again.");
+      setError("Sign-in failed. Try again.");
     } finally {
       setLoading(false);
     }

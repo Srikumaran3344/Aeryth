@@ -7,7 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
-    "firebase": "^12.4.0"
+    "firebase": "^12.5.0"
   },
   "devDependencies": {
     "fs-extra": "^11.3.2"

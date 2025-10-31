@@ -1,17 +1,13 @@
 // src/utils/firebaseInit.js
-// Uses Firebase ESM CDN (works in extension + Vite dev).
-// Exports: ensureFirebaseAuth, signInWithGoogleToken, signOutUser, auth, db
-
 import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getAuth,
   signInWithCredential,
   GoogleAuthProvider,
-  signInAnonymously,
   onAuthStateChanged,
   signOut
 } from "firebase/auth";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDDKEf908B2botxBpCAtJWtZJxq7ylaKY",
@@ -22,62 +18,29 @@ const firebaseConfig = {
   appId: "1:789931924901:web:e09c529c4c814133ca9c4c"
 };
 
-// Initialize app safely (multiple imports can happen in dev)
-let app;
-if (getApps().length > 0) {
-  try { app = getApp(); } catch { app = initializeApp(firebaseConfig); }
-} else {
-  app = initializeApp(firebaseConfig);
-}
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-const auth = getAuth(app);
-const db = getFirestore(app);
-const provider = new GoogleAuthProvider();
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export const provider = new GoogleAuthProvider();
 
-/**
- * Ensure an authenticated user exists.
- * Returns user (anonymous or real).
- */
-export async function ensureFirebaseAuth() {
-  return new Promise((resolve, reject) => {
-    try {
-      onAuthStateChanged(auth, async (user) => {
-        if (user) return resolve(user);
-        // If no user, sign in anonymously for background safe ops
-        try {
-          const cred = await signInAnonymously(auth);
-          return resolve(cred.user);
-        } catch (e) {
-          return reject(e);
-        }
-      });
-    } catch (e) {
-      reject(e);
-    }
+export function ensureFirebaseAuth() {
+  return new Promise((resolve) => {
+    onAuthStateChanged(auth, (user) => resolve(user || null));
   });
 }
 
-/**
- * Sign in to Firebase using a Google access token.
- * This is used after chrome.identity returns an access token.
- */
-export async function signInWithGoogleToken(accessToken) {
-  if (!accessToken) throw new Error("Missing accessToken");
-  const cred = GoogleAuthProvider.credential(null, accessToken);
-  const result = await signInWithCredential(auth, cred);
-  return result.user;
+export async function signInWithGoogleToken(token) {
+  if (!token) throw new Error("Missing access token");
+  const cred = GoogleAuthProvider.credential(null, token);
+  const { user } = await signInWithCredential(auth, cred);
+  return user;
 }
 
-/**
- * Sign out non-anonymous users (keeps anonymous fallback)
- */
 export async function signOutUser() {
   try {
-    const u = auth.currentUser;
-    if (u && !u.isAnonymous) await signOut(auth);
+    await signOut(auth);
   } catch (e) {
     console.warn("signOutUser failed", e);
   }
 }
-
-export { auth, db, provider };
