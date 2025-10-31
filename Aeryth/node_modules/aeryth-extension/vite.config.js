@@ -17,6 +17,7 @@ export default defineConfig({
         fs.copySync(resolve(__dirname, "manifest.json"), resolve(dist, "manifest.json"));
         fs.copySync(resolve(__dirname, "icons"), resolve(dist, "icons"));
         fs.copySync(resolve(__dirname, "background.js"), resolve(dist, "background.js"));
+        fs.copySync(resolve(__dirname, "popup.html"), resolve(dist, "popup.html"));
         fs.copySync(resolve(__dirname, "src/utils"), resolve(dist, "utils"));
       },
     },
