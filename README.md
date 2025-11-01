@@ -23,10 +23,8 @@ Before installing the extension, you must enable the Gemini Nano API in Chrome:
 6. Restart Chrome
 7. Wait a few minutes for the model to download in the background
 
-To verify the model is ready:
-1. Open DevTools (F12)
-2. In Console, type: `await ai.languageModel.capabilities()`
-3. You should see `available: "readily"` in the response
+verify the model is ready:
+
 
 ### 2. Google Account
 
