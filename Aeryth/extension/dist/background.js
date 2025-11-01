@@ -183,7 +183,7 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
       priority: 2,
       buttons: [
         { title: "✅ Start Now" },
-        { title: "⏰ Snooze 5min" }
+        { title: "⏰ Snooze" }
       ],
       requireInteraction: true,
       silent: false
