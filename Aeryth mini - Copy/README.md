@@ -1,2 +1,0 @@
-This is the entire file that i have ised in the project, make sure to download node modules using npm install
-the only file required from here will be Aeryth mini\extension\dist - this shoyuld be loaded in chrome://extensions/ via load unpacked after enabling developer mode
