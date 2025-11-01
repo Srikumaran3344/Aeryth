@@ -17,7 +17,7 @@ import { buildAndPersistProfileSummary } from "./utils/personalization";
 
 export default function App() {
   /* persisted state */
-  const [settings, setSettings] = useState({ aerythTone: "Friendly", userInfo: "", routineCriteria: "" });
+  const [settings, setSettings] = useState({ aerythTone: "Friendly (Default)", userInfo: "", routineCriteria: "" });
   const [routines, setRoutines] = useState([]);
   const [diary, setDiary] = useState({});
   const [stickies, setStickies] = useState({});

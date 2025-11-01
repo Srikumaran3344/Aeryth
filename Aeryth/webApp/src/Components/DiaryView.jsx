@@ -256,8 +256,8 @@ export default function DiaryView({ diary, addDiaryEntry, deleteDiaryEntry, upda
               <div
                 className="whitespace-pre-wrap text-sm p-2 border rounded bg-gray-50"
                 style={{ minHeight: 80 }}
+                dangerouslySetInnerHTML={{ __html: grammarPreview.correctedText }}
               >
-                dangerouslySetInnerHTML={{ __html: grammarPreview.correctedText}}
               </div>
               <div className="flex gap-3 mt-3">
                 <button

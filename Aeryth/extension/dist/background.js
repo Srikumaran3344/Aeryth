@@ -1,6 +1,3 @@
-// extension/background.js
-// Service worker - NO Firebase imports here
-
 const NOTIF_META_PREFIX = "notif_meta_";
 const ACTIVE_META_PREFIX = "active_notif_meta_";
 const ALARM_PREFIX = "aeryth_";
@@ -177,6 +174,7 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
   const aiText = generateNotificationText(meta, settings.aerythTone, snoozeCount);
   
   if (meta.type === "start") {
+    // Chrome only supports 2 buttons - provide Start and Snooze
     return {
       type: "basic",
       title: "⏰ Aeryth",
@@ -184,11 +182,8 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
       iconUrl: "icons/icon48.png",
       priority: 2,
       buttons: [
-        { title: "✅ Start" },
-        { title: "⏭️ Skip" },
-        { title: "⏰ 2min" },
-        { title: "⏰ 5min" },
-        { title: "⏰ 10min" }
+        { title: "✅ Start Now" },
+        { title: "⏰ Snooze 5min" }
       ],
       requireInteraction: true,
       silent: false
@@ -201,8 +196,8 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
       iconUrl: "icons/icon48.png",
       priority: 2,
       buttons: [
-        { title: "✅ Done" },
-        { title: "⏭️ Skip" }
+        { title: "✅ Completed" },
+        { title: "⏭️ Skipped" }
       ],
       requireInteraction: true,
       silent: false
@@ -216,7 +211,22 @@ async function buildNotificationOptions(meta, snoozeCount = 0) {
       priority: 2,
       buttons: [
         { title: "✅ Start Now" },
-        { title: "❌ Skip" }
+        { title: "❌ Skip Anyway" }
+      ],
+      requireInteraction: true,
+      silent: false
+    };
+  } else if (meta.type === "snooze_choice") {
+    // Follow-up notification for snooze duration choice
+    return {
+      type: "basic",
+      title: "⏰ Snooze Options",
+      message: "How long would you like to snooze?",
+      iconUrl: "icons/icon48.png",
+      priority: 2,
+      buttons: [
+        { title: "2 minutes" },
+        { title: "10 minutes" }
       ],
       requireInteraction: true,
       silent: false
@@ -302,8 +312,8 @@ chrome.runtime.onStartup.addListener(async () => {
   await syncAndScheduleAlarms();
 });
 
-// Periodic sync every 30 minutes to stay updated
-chrome.alarms.create("aeryth_sync", { periodInMinutes: 30 });
+// Frequent sync every 1 minute to keep data fresh and respond quickly to changes
+chrome.alarms.create("aeryth_sync", { periodInMinutes: 1 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "aeryth_sync") {
@@ -360,23 +370,36 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
     const { routineId, dateIso, type, snoozeCount = 0 } = meta;
     const snoozeKey = `${SNOOZE_TRACKER_PREFIX}${routineId}_${dateIso}`;
     
-    let action = null;
+    console.log(`👆 Button ${buttonIndex} clicked for ${type}`);
     
     if (type === "start") {
-      const actions = ["start", "skip", "snooze2", "snooze5", "snooze10"];
-      action = actions[buttonIndex];
-    } else if (type === "end") {
-      const actions = ["completed", "skipped"];
-      action = actions[buttonIndex];
-    } else if (type === "skip_motivation") {
-      const actions = ["start", "skip"];
-      action = actions[buttonIndex];
-    }
-    
-    console.log(`👆 Button clicked: ${action}`);
-    
-    if (action?.startsWith("snooze")) {
-      const mins = parseInt(action.replace("snooze", ""));
+      if (buttonIndex === 0) {
+        // Start Now
+        await chrome.storage.local.remove([snoozeKey]);
+        
+        // Update status and save to Firebase
+        await updateStatusDirectly(routineId, dateIso, "in-progress");
+        
+      } else if (buttonIndex === 1) {
+        // Snooze - show duration choice
+        const choiceMeta = {
+          ...meta,
+          type: "snooze_choice",
+          notifId: `${notificationId}-choice`
+        };
+        
+        const choiceOptions = await buildNotificationOptions(choiceMeta, 0);
+        if (choiceOptions) {
+          chrome.notifications.create(choiceMeta.notifId, choiceOptions);
+          await chrome.storage.local.set({ 
+            [`${ACTIVE_META_PREFIX}${choiceMeta.notifId}`]: choiceMeta 
+          });
+        }
+      }
+      
+    } else if (type === "snooze_choice") {
+      // Handle snooze duration selection
+      const mins = buttonIndex === 0 ? 2 : 10;
       const newWhen = Date.now() + mins * 60000;
       const newSnoozeCount = snoozeCount + 1;
       
@@ -393,60 +416,29 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
       await chrome.storage.local.set({ [`${NOTIF_META_PREFIX}${newAlarmName}`]: snoozeMeta });
       chrome.alarms.create(newAlarmName, { when: newWhen });
       
-      // Try to log but don't fail if popup is closed
-      chrome.runtime.sendMessage({
-        action: "logNotification",
-        routineId,
-        dateIso,
-        text: `Snoozed for ${mins} minutes`
-      }).catch(() => console.log("Popup closed, log skipped"));
+      await updateStatusDirectly(routineId, dateIso, "snoozed");
       
-    } else if (action === "start") {
-      await chrome.storage.local.remove([snoozeKey]);
-      
-      chrome.runtime.sendMessage({
-        action: "updateEventStatus",
-        routineId,
-        dateIso,
-        status: "in-progress"
-      }).catch(() => console.log("Popup closed, status update skipped"));
-      
-    } else if (action === "skip") {
-      if (type === "start" && snoozeCount === 0) {
-        // Send motivation notification
-        const motivationMeta = { 
-          ...meta, 
-          type: "skip_motivation",
-          notifId: `${notificationId}-motivation`
-        };
-        
-        const motivationOptions = await buildNotificationOptions(motivationMeta, 0);
-        if (motivationOptions) {
-          chrome.notifications.create(motivationMeta.notifId, motivationOptions);
-          await chrome.storage.local.set({ 
-            [`${ACTIVE_META_PREFIX}${motivationMeta.notifId}`]: motivationMeta 
-          });
-        }
-      } else {
+    } else if (type === "end") {
+      if (buttonIndex === 0) {
+        // Completed
         await chrome.storage.local.remove([snoozeKey]);
-        
-        chrome.runtime.sendMessage({
-          action: "updateEventStatus",
-          routineId,
-          dateIso,
-          status: "skipped"
-        }).catch(() => console.log("Popup closed, status update skipped"));
+        await updateStatusDirectly(routineId, dateIso, "completed");
+      } else {
+        // Skipped
+        await chrome.storage.local.remove([snoozeKey]);
+        await updateStatusDirectly(routineId, dateIso, "skipped");
       }
       
-    } else if (action === "completed") {
-      await chrome.storage.local.remove([snoozeKey]);
-      
-      chrome.runtime.sendMessage({
-        action: "updateEventStatus",
-        routineId,
-        dateIso,
-        status: "completed"
-      }).catch(() => console.log("Popup closed, status update skipped"));
+    } else if (type === "skip_motivation") {
+      if (buttonIndex === 0) {
+        // Start Now after motivation
+        await chrome.storage.local.remove([snoozeKey]);
+        await updateStatusDirectly(routineId, dateIso, "in-progress");
+      } else {
+        // Skip Anyway
+        await chrome.storage.local.remove([snoozeKey]);
+        await updateStatusDirectly(routineId, dateIso, "skipped");
+      }
     }
     
     await chrome.storage.local.remove([metaKey]);
@@ -456,6 +448,31 @@ chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIn
     console.error("❌ onButtonClicked error", e);
   }
 });
+
+// Helper function to update status both locally and in Firebase
+async function updateStatusDirectly(routineId, dateIso, status) {
+  try {
+    // Save to local cache immediately for quick UI updates
+    const cachedStatuses = await loadLocal("cached_event_statuses", {});
+    cachedStatuses[routineId] = cachedStatuses[routineId] || {};
+    cachedStatuses[routineId][dateIso] = status;
+    await saveLocal("cached_event_statuses", cachedStatuses);
+    
+    // Try to save to Firebase via popup
+    chrome.runtime.sendMessage({
+      action: "updateEventStatus",
+      routineId,
+      dateIso,
+      status
+    }).catch(() => {
+      console.log("Firebase update will sync when popup opens");
+    });
+    
+    console.log(`✅ Status updated: ${routineId} on ${dateIso} → ${status}`);
+  } catch (e) {
+    console.error("updateStatusDirectly failed:", e);
+  }
+}
 
 chrome.notifications.onClosed.addListener(async (notificationId) => {
   const metaKey = `${ACTIVE_META_PREFIX}${notificationId}`;

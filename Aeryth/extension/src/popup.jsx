@@ -47,6 +47,11 @@ async function handleUpdateEventStatus({ routineId, dateIso, status }) {
     eventStatuses[routineId] = eventStatuses[routineId] || {};
     eventStatuses[routineId][dateIso] = status;
     await saveAsync("aeryth_event_statuses", eventStatuses);
+    
+    // Also sync back to local cache so background worker has latest data
+    chrome.storage.local.set({ "cached_event_statuses": eventStatuses });
+    
+    console.log(`✅ Status synced to Firebase: ${routineId} → ${status}`);
     return { success: true };
   } catch (error) {
     console.error("Update status failed:", error);
@@ -114,9 +119,30 @@ const Popup = () => {
     try {
       const routines = await loadAsync("aeryth_routines", []);
       const settings = await loadAsync("aeryth_settings", {});
-      setData({ routines, settings });
+      const eventStatuses = await loadAsync("aeryth_event_statuses", {});
       
-      // Notify background worker to sync (optional - triggers alarm scheduling)
+      // Merge cached statuses from background worker
+      const cachedStatuses = await new Promise(res => 
+        chrome.storage.local.get(["cached_event_statuses"], result => 
+          res(result.cached_event_statuses || {})
+        )
+      );
+      
+      // Merge cached updates into Firebase data
+      Object.keys(cachedStatuses).forEach(routineId => {
+        if (!eventStatuses[routineId]) eventStatuses[routineId] = {};
+        Object.assign(eventStatuses[routineId], cachedStatuses[routineId]);
+      });
+      
+      // Save merged data back to Firebase
+      if (Object.keys(cachedStatuses).length > 0) {
+        await saveAsync("aeryth_event_statuses", eventStatuses);
+        console.log("✅ Synced cached statuses to Firebase");
+      }
+      
+      setData({ routines, settings, eventStatuses });
+      
+      // Notify background worker to sync
       chrome.runtime.sendMessage({ action: "syncNow" }).catch(() => {
         console.log("Background worker not ready yet");
       });
@@ -227,12 +253,16 @@ const Popup = () => {
         if (createdAtIso && dayIso < createdAtIso) return;
         const weekDay = weekdayNameFromIso(dayIso);
         if (r.days.includes(weekDay)) {
+          // Check status for this routine on this day
+          const status = data?.eventStatuses?.[r.id]?.[dayIso];
+          
           events[dayIso].push({
             routineId: r.id,
             name: r.name || "Routine",
             color: r.color || "violet",
             startTime: r.startTime,
-            endTime: r.endTime
+            endTime: r.endTime,
+            status: status // Add status here
           });
         }
       });
